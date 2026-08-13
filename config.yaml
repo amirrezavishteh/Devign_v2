@@ -1,0 +1,131 @@
+# Devign end-to-end configuration.
+# Mirrors the hyperparameters reported in Sec 3.3 of the Devign paper (NeurIPS 2019).
+
+project:
+  name: devign
+  seed: 42
+  artifacts_dir: artifacts
+  device: cuda  # falls back to cpu automatically if no GPU is available
+
+data:
+  # Where raw functions come from:
+  #   devign_release -- the Devign authors' OWN released dataset (FFmpeg + QEMU), downloaded from
+  #                     HuggingFace `google/code_x_glue_cc_defect_detection`. This is the real
+  #                     manually-labelled data behind the paper. Linux Kernel and Wireshark were
+  #                     never publicly released, so those two paper columns cannot be reproduced.
+  #   file           -- read `real_data_path` (json/jsonl/csv with func/target/project)
+  #   synthetic      -- CWE templates; offline smoke test ONLY, not a real benchmark.
+  source: devign_release
+  projects: [qemu, ffmpeg]
+  raw_dir: data/raw
+  processed_dir: data/processed
+  hf_cache_dir: null      # null -> default HF cache
+  max_nodes: 500          # functions with more nodes than this are filtered out (paper: ~15% removed)
+  train_split: 0.75
+  val_split: 0.125        # paper has no test set; we halve its 25% so the reported number is unbiased
+  test_split: 0.125       # untouched by training and early stopping
+  paper_split: false      # true -> exact paper 75/25 train/val, no test set
+  split_by: random        # random (paper-faithful) | commit (commit-disjoint leakage check)
+  shuffle: true
+  imbalanced_vuln_ratio: 0.10   # Q4: real-world imbalanced setting
+  real_data_path: null
+  synthetic:
+    enabled: true
+    samples_per_project: 600
+    vuln_ratio:
+      linux_kernel: 0.675   # 11198 / 16583 (Table 1)
+      qemu: 0.425           # 6648 / 15645
+      wireshark: 0.319      # 6386 / 20021
+      ffmpeg: 0.509         # 3420 / 6716
+
+# The 7 edge types that share the node set V = V_ast.
+# AST/CFG/NCS/DFG_R/DFG_W/DFG_C are the 6 representations described in the paper (Sec 2.2.2).
+# REV_AST (reverse parent<-child) is added as the 7th matrix A_p so that messages can flow both
+# up and down the AST backbone during neighborhood aggregation (Sec 2.3, Eq. 3) -- the paper fixes
+# k=7 adjacency matrices without spelling out the 7th, and bidirectional tree propagation is the
+# standard choice used by GGNN-style models (Li et al. 2015) for tree-shaped backbones.
+edge_types: [AST, REV_AST, CFG, NCS, DFG_R, DFG_W, DFG_C]
+
+dataset:
+  # The paper defines A as a raw binary tensor in {0,1}^(k x m x m) (Sec 2.1), so both of these
+  # default OFF. Turning them on is a (defensible) deviation, not the paper's formulation.
+  add_self_loops: false
+  normalize_adj: false
+  # Sparse edge-list message passing instead of a dense [B,k,M,M] adjacency. Mathematically
+  # identical (asserted in tests/test_sparse_equivalence.py) but O(E*z) instead of O(k*M^2) --
+  # required to fit real 500-node graphs at batch_size 128 on an 8 GB GPU.
+  sparse: true
+  bucket_by_size: true    # sort-then-chunk batching to cut padding waste
+  # Hard cap on (graphs x padded nodes) per forward pass. The Conv module materialises
+  # [B, channels, M, W] maps, so memory scales with B*M rather than B: 128 graphs of 500 nodes is
+  # ~10x the cost of 128 graphs of 50. Batches exceeding this are split into micro-batches and the
+  # trainer accumulates gradients up to training.batch_size, so the paper's effective batch size
+  # of 128 is preserved exactly while peak memory stays bounded on an 8 GB card.
+  max_nodes_per_batch: 12000
+
+embedding:
+  word2vec_dim: 100
+  type_dim: 100            # label-encoded node Type, embedded to this size -> concat with code = 200-d xv
+  word2vec_min_count: 1
+  word2vec_window: 5
+  word2vec_epochs: 10
+  word2vec_workers: 4
+
+model:
+  hidden_dim: 200           # z, GRU hidden state size (h = [x^T, 0]^T padded to z)
+  time_steps: 6             # T
+  aggregation: sum          # one of {mean, max, sum, concat}; paper uses SUM
+  conv:
+    conv1_filter: [1, 3]
+    pool1_filter: [1, 3]
+    pool1_stride: [1, 2]
+    conv2_filter: [1, 1]
+    pool2_filter: [2, 2]
+    pool2_stride: [1, 2]
+    conv_channels: 50
+    mlp_hidden: 64
+  dropout: 0.2
+
+training:
+  optimizer: adam
+  lr: 0.0001
+  batch_size: 128
+  epochs: 200
+  early_stopping_patience: 100
+  l2_weight: 0.0001
+  grad_clip: 5.0
+
+baselines:
+  bilstm:
+    layers: 3
+    hidden_dim: 200
+    bidirectional: true
+    attention: false
+  bilstm_att:
+    layers: 3
+    hidden_dim: 200
+    bidirectional: true
+    attention: true
+  cnn:
+    embedding_dim: 100
+    num_filters: 100
+    filter_sizes: [3, 4, 5]
+  metrics_xgboost:
+    n_estimators: 200
+    max_depth: 6
+    bayes_opt_iters: 25
+
+evaluation:
+  metrics: [accuracy, f1]
+  ablation_edge_types: [AST, CFG, NCS, DFG_R, DFG_W, DFG_C]
+  static_analyzers: [cppcheck, flawfinder]
+  # Explicit paths for analyzers not on PATH (Windows installs usually aren't). null -> look up
+  # on PATH. If a tool resolves to neither, its row is labelled `regex-mimic (NOT <tool>)` and is
+  # excluded from any headline claim -- a regex stand-in is not evidence about the real tool.
+  static_analyzer_paths:
+    cppcheck: null
+    flawfinder: null
+  # Q5. The paper's 40-CVE / 112-function set was never released, so we cannot reproduce it.
+  # Instead we hold out vulnerable functions whose commit appears in NO training function; this
+  # is reported as an unseen-commit proxy, never as a CVE or zero-day result.
+  holdout_per_project: 56   # 112 total, matching the paper's function count

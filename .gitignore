@@ -1,0 +1,19 @@
+# Generated artifacts and data
+artifacts/
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+venv/
+.venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,18 @@
+torch>=2.1.0
+numpy>=1.24.0
+gensim>=4.3.0
+# The code uses the tree-sitter 0.22+ API (Language(capsule), Parser(lang), node.has_error).
+# The previous <0.22 pin made a clean install fail at import.
+tree-sitter>=0.22.0
+tree-sitter-c>=0.21.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+scikit-optimize>=0.9.0
+PyYAML>=6.0
+pandas>=2.0.0
+# Real dataset download (the Devign authors' released FFmpeg+QEMU data) -- see data/hf_devign.py.
+huggingface_hub>=0.20.0
+pyarrow>=14.0.0
+# Table 3 static-analyzer comparison. Pure-Python, installs on Windows; cppcheck is a separate
+# native binary (see README) and is looked up on PATH / evaluation.static_analyzer_paths.
+flawfinder>=2.0.19
