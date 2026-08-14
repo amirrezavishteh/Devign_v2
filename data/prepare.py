@@ -108,49 +108,72 @@ def split_functions(functions: list[RawFunction], data_cfg: dict, seed: int):
 # ----------------------------------------------------------------------------------------------
 
 _WORKER_MAX_NODES = 500
+_WORKER_MAX_ERROR_FRACTION = 0.2
 
 
-def _init_worker(max_nodes: int) -> None:
-    global _WORKER_MAX_NODES
+def _init_worker(max_nodes: int, max_error_fraction: float) -> None:
+    global _WORKER_MAX_NODES, _WORKER_MAX_ERROR_FRACTION
     _WORKER_MAX_NODES = max_nodes
+    _WORKER_MAX_ERROR_FRACTION = max_error_fraction
 
 
 def _build_one(source: str):
-    """Top-level so it is picklable under Windows spawn. Returns a CodeGraph or None."""
-    from data.graph_builder import build_graph
+    """Top-level so it is picklable under Windows spawn. Returns (CodeGraph|None, reason)."""
+    from data.graph_builder import build_graph_with_reason
     try:
-        return build_graph(source, max_nodes=_WORKER_MAX_NODES)
+        return build_graph_with_reason(source, max_nodes=_WORKER_MAX_NODES,
+                                       max_error_fraction=_WORKER_MAX_ERROR_FRACTION)
     except Exception:
         # A parser blow-up on one pathological function must not kill the whole run.
-        return None
+        return None, "exception"
+
+
+def _build_one_serial(source: str, max_nodes: int, max_error_fraction: float):
+    from data.graph_builder import build_graph_with_reason
+    try:
+        return build_graph_with_reason(source, max_nodes=max_nodes,
+                                       max_error_fraction=max_error_fraction)
+    except Exception:
+        return None, "exception"
 
 
 def build_graphs_parallel(functions: list[RawFunction], max_nodes: int, workers: int,
-                          verbose: bool = True):
-    """Parse every function ONCE, in parallel. Returns [(RawFunction, CodeGraph)] for survivors."""
+                          max_error_fraction: float = 0.2, verbose: bool = True):
+    """Parse every function ONCE, in parallel. Returns [(RawFunction, CodeGraph)] for survivors.
+
+    Drop reasons are reported separately: the >max_nodes filter is the paper's own (Sec 3.1,
+    ~15% of data), while the parse filter is ours, and conflating them previously hid that the
+    latter was silently discarding an extra 12.1% of the corpus.
+    """
     sources = [fn.func for fn in functions]
     if workers <= 1 or len(sources) < 200:
-        graphs = [_build_one_serial(s, max_nodes) for s in sources]
+        results = [_build_one_serial(s, max_nodes, max_error_fraction) for s in sources]
     else:
         import multiprocessing as mp
         chunk = max(1, len(sources) // (workers * 8))
-        with mp.Pool(workers, initializer=_init_worker, initargs=(max_nodes,)) as pool:
-            graphs = pool.map(_build_one, sources, chunksize=chunk)
+        with mp.Pool(workers, initializer=_init_worker,
+                     initargs=(max_nodes, max_error_fraction)) as pool:
+            results = pool.map(_build_one, sources, chunksize=chunk)
 
-    pairs = [(fn, g) for fn, g in zip(functions, graphs) if g is not None and g.num_nodes > 0]
+    pairs, reasons = [], {}
+    for fn, (graph, reason) in zip(functions, results):
+        if graph is not None and graph.num_nodes > 0:
+            pairs.append((fn, graph))
+        else:
+            reasons[reason or "empty"] = reasons.get(reason or "empty", 0) + 1
+
     if verbose:
-        dropped = len(functions) - len(pairs)
-        pct = 100.0 * dropped / max(1, len(functions))
-        print(f"[prepare] graphs built: {len(pairs)} kept, {dropped} dropped "
-              f"({pct:.1f}%) by the >{max_nodes}-node and parser-error filters")
+        total = max(1, len(functions))
+        dropped = total - len(pairs)
+        print(f"[prepare] graphs built: {len(pairs)} kept ({100.0 * len(pairs) / total:.1f}%), "
+              f"{dropped} dropped ({100.0 * dropped / total:.1f}%)")
+        labels = {"size": f">{max_nodes} nodes (paper's filter)",
+                  "parse": f"unparseable (no function_definition, or >{max_error_fraction:.0%} ERROR span)",
+                  "empty": "no AST nodes", "exception": "parser exception"}
+        for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+            print(f"[prepare]   {count:6d} ({100.0 * count / total:4.1f}%)  "
+                  f"{labels.get(reason, reason)}")
     return pairs
-
-
-def _build_one_serial(source: str, max_nodes: int):
-    try:
-        return build_graph(source, max_nodes=max_nodes)
-    except Exception:
-        return None
 
 
 def prepare(config: dict, verbose: bool = True):
@@ -170,7 +193,9 @@ def prepare(config: dict, verbose: bool = True):
     #    (The paper trains word2vec on the whole code corpus of the projects, so we fit on all
     #    parseable functions -- that is the corpus, not the labels.)
     workers = data_cfg.get("parse_workers") or max(1, (os.cpu_count() or 2) - 1)
-    pairs = build_graphs_parallel(functions, data_cfg["max_nodes"], workers, verbose=verbose)
+    pairs = build_graphs_parallel(functions, data_cfg["max_nodes"], workers,
+                                  max_error_fraction=data_cfg.get("max_error_fraction", 0.2),
+                                  verbose=verbose)
     parseable = [fn for fn, _ in pairs]
     graphs = [g for _, g in pairs]
     graph_by_id = {id(fn): g for fn, g in pairs}

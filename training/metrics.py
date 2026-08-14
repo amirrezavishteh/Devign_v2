@@ -57,18 +57,29 @@ def prob_metrics(y_true, probs, threshold: float = 0.5) -> dict[str, float]:
     return out
 
 
-def best_threshold(y_true, probs, objective: str = "mcc") -> float:
+def best_threshold(y_true, probs, objective: str = "f1_guarded") -> float:
     """Decision threshold optimising `objective` on this split.
 
     The model outputs a ranking; 0.5 is an arbitrary cut through it and is rarely optimal,
     especially with an uncalibrated model (an undertrained net emits logits near 0, so every
     probability sits in a razor-thin band around 0.5). Tuned on validation, applied to test.
 
-    Defaults to MCC rather than F1 deliberately. Maximising F1 would re-create the very trap this
-    module exists to avoid: on a 45%-positive split, an extreme threshold that labels everything
-    vulnerable scores F1 ~60% while being useless. MCC is 0 for any constant predictor, so it
-    cannot be won that way, and it balances both classes -- which matters because the paper
-    reports accuracy *and* F1, and an F1-optimal threshold can tank accuracy.
+    Objectives:
+
+    ``f1_guarded`` (default)
+        Maximise F1 **subject to accuracy >= accuracy at 0.5**. Two properties motivate it:
+
+        1. It provably dominates the 0.5 default on *both* metrics the paper reports, because
+           0.5 is always in the feasible set -- so F1 >= F1@0.5 and accuracy >= accuracy@0.5.
+        2. It cannot pick the degenerate all-positive cut, because labelling everything
+           vulnerable craters accuracy (40.9% on qemu vs ~62% at 0.5) and is excluded.
+
+        Plain ``f1`` fails (2): on a 45%-positive split, "everything is vulnerable" scores
+        F1 ~60% while being useless. Plain ``mcc`` fails a different way, observed on real data:
+        it chose threshold 0.996, buying 4 points of accuracy for 14 points of F1 (65.69/37.96).
+
+    ``mcc`` / ``f1`` / ``accuracy``
+        Unconstrained maximisation of that single metric. Kept for analysis; see the caveats above.
     """
     y_true = np.asarray(y_true).astype(int)
     probs = np.asarray(probs, dtype=np.float64)
@@ -82,11 +93,25 @@ def best_threshold(y_true, probs, objective: str = "mcc") -> float:
         uniq = np.quantile(uniq, np.linspace(0.0, 1.0, 512))
     candidates = np.unique(np.concatenate([[0.5], (uniq[:-1] + uniq[1:]) / 2.0]))
 
+    def _mcc(preds) -> float:
+        from sklearn.metrics import matthews_corrcoef
+        return float(matthews_corrcoef(y_true, preds))
+
+    if objective == "f1_guarded":
+        floor = binary_metrics(y_true, (probs >= 0.5).astype(int))["accuracy"]
+        best_thr, best_f1 = 0.5, -np.inf
+        for thr in candidates:
+            m = binary_metrics(y_true, (probs >= thr).astype(int))
+            # Strictly-worse-accuracy thresholds are infeasible; ties are allowed so the search
+            # can still trade a flat accuracy region for better F1.
+            if m["accuracy"] + 1e-9 < floor:
+                continue
+            if m["f1"] > best_f1:
+                best_f1, best_thr = m["f1"], float(thr)
+        return best_thr
+
     def _score(preds) -> float:
-        if objective == "mcc":
-            from sklearn.metrics import matthews_corrcoef
-            return float(matthews_corrcoef(y_true, preds))
-        return binary_metrics(y_true, preds)[objective]
+        return _mcc(preds) if objective == "mcc" else binary_metrics(y_true, preds)[objective]
 
     best_thr, best_score = 0.5, -np.inf
     for thr in candidates:

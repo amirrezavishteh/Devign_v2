@@ -35,6 +35,50 @@ _SKIP_LEAF_TYPES = {
 
 
 @dataclass
+class ParseInfo:
+    """How badly (if at all) tree-sitter struggled with a function.
+
+    tree-sitter is error-tolerant: it always returns a tree, and a single ERROR node inside an
+    otherwise sound 300-node function is not a failed parse. Discarding every function with any
+    ERROR node threw away 12.1% of the real corpus (~3,300 functions) -- mostly ordinary C using
+    macros or GNU extensions. These fields let the caller distinguish a localised hiccup from a
+    genuinely unparseable function, matching the paper's "oblivious errors" wording (Sec 3.1).
+    """
+    has_error: bool
+    error_bytes: int
+    total_bytes: int
+    has_function_definition: bool
+
+    @property
+    def error_fraction(self) -> float:
+        return (self.error_bytes / self.total_bytes) if self.total_bytes else 0.0
+
+    def is_usable(self, max_error_fraction: float = 0.2) -> bool:
+        """Usable unless the function never formed a definition, or is largely unparsed."""
+        if not self.has_function_definition:
+            return False
+        return self.error_fraction <= max_error_fraction
+
+
+def _scan_parse_quality(root, total_bytes: int) -> ParseInfo:
+    """Walk the parsed tree once, measuring ERROR coverage and locating a function definition."""
+    error_bytes = 0
+    has_func = False
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "function_definition":
+            has_func = True
+        if node.type == "ERROR" or node.is_missing:
+            # Count the whole span once; descending would double-count nested errors.
+            error_bytes += max(0, node.end_byte - node.start_byte)
+            continue
+        stack.extend(node.children)
+    return ParseInfo(has_error=bool(root.has_error), error_bytes=error_bytes,
+                     total_bytes=total_bytes, has_function_definition=has_func)
+
+
+@dataclass
 class ASTNode:
     id: int
     type: str
@@ -59,13 +103,14 @@ def flatten_ast(source: str, return_error: bool = False):
     order so that downstream NCS-edge construction (Sec "Natural Code Sequence") is a simple
     by-position sort of the leaf nodes.
 
-    Returns (nodes, src_bytes), or (nodes, src_bytes, has_error) when `return_error` is set --
-    the flag comes from the parse we already did, so callers that filter on syntax errors (the
-    paper drops functions Joern could not parse, Sec 3.1) don't pay for a second parse.
+    Returns (nodes, src_bytes), or (nodes, src_bytes, ParseInfo) when `return_error` is set --
+    the parse-quality measurements come from the parse we already did, so callers that filter on
+    syntax errors (the paper drops functions Joern could not parse, Sec 3.1) don't pay for a
+    second parse.
     """
     src_bytes = source.encode("utf-8")
     root = parse_source(source)
-    had_error = root.has_error
+    parse_info = _scan_parse_quality(root, len(src_bytes))
 
     nodes: list[ASTNode] = []
 
@@ -101,7 +146,7 @@ def flatten_ast(source: str, return_error: bool = False):
 
     visit(root, None)
     if return_error:
-        return nodes, src_bytes, had_error
+        return nodes, src_bytes, parse_info
     return nodes, src_bytes
 
 

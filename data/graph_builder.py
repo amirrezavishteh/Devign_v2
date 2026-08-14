@@ -370,25 +370,39 @@ def _build_dfg_edges(nodes: list[ASTNode]) -> dict[str, list[tuple[int, int]]]:
 # ----------------------------------------------------------------------------------------------
 
 def build_graph(source: str, max_nodes: Optional[int] = None,
-                drop_parse_errors: bool = True) -> Optional[CodeGraph]:
+                drop_parse_errors: bool = True,
+                max_error_fraction: float = 0.2) -> Optional[CodeGraph]:
     """Parse a C function and build its composite multi-edge graph.
 
     Returns None if the snippet exceeds `max_nodes` (the paper filters out functions with > 500
     nodes, ~15% of the raw data, Sec 3.1) or fails to parse ("We filter out those functions
     without ASTs and CFGs or with oblivious errors in ASTs and CFGs", Sec 3.1).
 
-    The parse-error filter matters on real code and not at all on templated code: tree-sitter is
-    error-tolerant and always returns a root, so a function it could not parse still yields a
-    plausible-looking tree of ERROR nodes. Without this check such functions silently train the
-    model on garbage structure.
+    "Oblivious errors" means gross failures, not any error at all -- so the parse filter rejects a
+    function only when no `function_definition` ever formed, or when ERROR nodes span more than
+    `max_error_fraction` of the source. Rejecting on *any* ERROR node discarded 12.1% of the real
+    corpus (~3,300 functions, measured), overwhelmingly ordinary C whose macros or GNU extensions
+    tree-sitter flags locally while still recovering the surrounding structure correctly.
     """
-    nodes, _, had_error = flatten_ast(source, return_error=True)
+    return build_graph_with_reason(source, max_nodes, drop_parse_errors, max_error_fraction)[0]
+
+
+def build_graph_with_reason(source: str, max_nodes: Optional[int] = None,
+                            drop_parse_errors: bool = True,
+                            max_error_fraction: float = 0.2):
+    """Like `build_graph`, but also returns why a function was rejected.
+
+    Reason is one of None (kept), "empty", "parse", "size". data/prepare.py reports these
+    separately so the two filters stay visible: conflating them previously hid the fact that the
+    parse filter alone was discarding 12.1% of the corpus.
+    """
+    nodes, _, parse_info = flatten_ast(source, return_error=True)
     if not nodes:
-        return None
-    if drop_parse_errors and had_error:
-        return None
+        return None, "empty"
+    if drop_parse_errors and not parse_info.is_usable(max_error_fraction):
+        return None, "parse"
     if max_nodes is not None and len(nodes) > max_nodes:
-        return None
+        return None, "size"
 
     ast_edges, rev_ast_edges = _build_ast_edges(nodes)
     ncs_edges = _build_ncs_edges(nodes)
@@ -402,4 +416,4 @@ def build_graph(source: str, max_nodes: Optional[int] = None,
         "NCS": ncs_edges,
         **dfg_edges,
     }
-    return CodeGraph(nodes=nodes, edges=edges)
+    return CodeGraph(nodes=nodes, edges=edges), None

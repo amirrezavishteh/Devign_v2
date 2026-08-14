@@ -32,10 +32,10 @@ class TrainConfig:
     # that way. See training/metrics.py.
     monitor: str = "auc"
     # Tune the decision threshold on validation after restoring the best checkpoint, and report
-    # at that threshold instead of an arbitrary 0.5. MCC is the objective rather than F1 because
-    # an F1-optimal threshold can itself be the degenerate all-positive cut.
+    # at that threshold instead of an arbitrary 0.5. See metrics.best_threshold for why the
+    # objective is guarded F1 rather than plain F1 (degenerate cut) or MCC (tanks F1).
     tune_threshold: bool = True
-    threshold_objective: str = "mcc"
+    threshold_objective: str = "f1_guarded"
     pos_weight: float | None = None
     # When the loader yields node-budget micro-batches (see data.dataset.BucketBySizeSampler),
     # accumulate gradients until `batch_size` graphs have been seen before stepping, so the
@@ -64,7 +64,7 @@ def make_train_config(cfg: dict, device: str, train_labels=None, epochs: int | N
         epochs=epochs or tr["epochs"], patience=tr["early_stopping_patience"],
         l2_weight=tr["l2_weight"], grad_clip=tr["grad_clip"], device=device,
         monitor=tr.get("monitor", "auc"), tune_threshold=tr.get("tune_threshold", True),
-        threshold_objective=tr.get("threshold_objective", "mcc"),
+        threshold_objective=tr.get("threshold_objective", "f1_guarded"),
         pos_weight=pos_weight,
     )
     kwargs.update(overrides)

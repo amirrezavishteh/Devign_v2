@@ -108,9 +108,12 @@ never beats it — so selecting on F1@0.5 restores an early, untrained epoch. Me
 selecting on F1 saved epoch 9 (**53.99%** accuracy) over epoch 70 (**62.99%**). AUC is exactly 50
 for any constant predictor and cannot be gamed that way.
 
-After the best checkpoint is restored, the decision threshold is tuned on validation (objective:
-**MCC**, since an F1-optimal threshold can itself be the degenerate all-positive cut) and persisted
-to `meta.json`. Every downstream consumer — Table 2/3, the Q5 holdout, `inference.predict` — reads
+After the best checkpoint is restored, the decision threshold is tuned on validation and persisted
+to `meta.json`. The objective is **guarded F1** — maximise F1 *subject to accuracy ≥ accuracy@0.5*
+— which provably cannot do worse than the 0.5 default on either metric the paper reports (0.5 is
+always feasible) and cannot select the degenerate all-positive cut (that craters accuracy). Plain
+F1 fails the second property; plain MCC fails the first, and on real data chose threshold 0.996,
+trading 14 points of F1 for 4 points of accuracy. Every downstream consumer — Table 2/3, the Q5 holdout, `inference.predict` — reads
 that threshold instead of assuming 0.5. For Table 3 the threshold is **recalibrated** on a
 validation subsample at the imbalanced 10% prevalence, because a cut tuned at ~46% prevalence drives
 F1 to ~0 on a 10%-positive set. `training.class_weighting` is off by default: the paper does no
@@ -164,6 +167,26 @@ python -m scripts.run_imbalanced        # Table 3 vs Cppcheck/Flawfinder
 python -m scripts.run_ablation --models devign ggrn --project combined
 python -m scripts.run_cve               # Q5 proxy — see §5's caveat
 python -m scripts.run_leakage_check     # commit-disjoint Combined, Devign + Ggrn
+```
+
+### Machine-specific configs
+A config may inherit from another with `extends:`, and should contain **only** the keys that
+differ — see [config_a100.yaml](config_a100.yaml):
+
+```yaml
+extends: config.yaml
+dataset:
+  max_nodes_per_batch: 24000   # this machine's GPU budget; everything else is inherited
+```
+
+This is not cosmetic. `config_a100.yaml` was previously a full *copy* of `config.yaml`, so
+later fixes to `dropout`, `word2vec_min_count` and `early_stopping_patience` never reached the
+training box and two full multi-hour runs were spent on stale hyperparameters. Verify inheritance
+any time you add a machine config:
+
+```bash
+python -c "from training.utils import load_config; c=load_config('config_a100.yaml'); \
+print(c['model']['dropout'], c['embedding']['word2vec_min_count'], c['training']['monitor'])"
 ```
 
 All hyperparameters live in [config.yaml](config.yaml). Results land under `artifacts/<model>/<project>/`

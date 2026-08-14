@@ -21,6 +21,12 @@ data:
   processed_dir: data/processed
   hf_cache_dir: null      # null -> default HF cache
   max_nodes: 500          # functions with more nodes than this are filtered out (paper: ~15% removed)
+  # Parse-quality filter. The paper drops functions "with oblivious errors" (Sec 3.1) -- gross
+  # failures, not any error at all. tree-sitter flags macros and GNU extensions locally while
+  # still recovering the surrounding structure, so a function is kept unless it never formed a
+  # function_definition or ERROR nodes span more than this fraction of the source. Rejecting on
+  # ANY error discarded a measured 12.1% of the real corpus (~3,300 usable functions).
+  max_error_fraction: 0.2
   train_split: 0.75
   val_split: 0.125        # paper has no test set; we halve its 25% so the reported number is unbiased
   test_split: 0.125       # untouched by training and early stopping
@@ -110,10 +116,12 @@ training:
   monitor: auc
   # Tune the decision threshold on validation after restoring the best checkpoint.
   tune_threshold: true
-  # Objective for that tuning. MCC, not f1: an F1-optimal threshold can itself be the degenerate
-  # all-positive cut (F1 ~60% on this data), which is the same trap as monitoring f1. MCC is 0
-  # for any constant predictor and balances both classes.
-  threshold_objective: mcc
+  # Objective for that tuning: maximise F1 subject to accuracy >= accuracy at 0.5. This provably
+  # dominates the 0.5 default on BOTH metrics the paper reports (0.5 is always feasible), and
+  # cannot select the degenerate all-positive cut (which craters accuracy). Plain `f1` can pick
+  # that degenerate cut; plain `mcc` was observed on real data to choose threshold 0.996, trading
+  # 14 points of F1 for 4 points of accuracy (65.69/37.96). Both remain selectable for analysis.
+  threshold_objective: f1_guarded
   # The paper does no class reweighting, and the data is 45.6% positive so it needs none. Turning
   # this on biases predictions positive, which is exactly the degenerate regime above.
   class_weighting: false

@@ -44,11 +44,46 @@ def test_max_nodes_filter():
     assert build_graph(_EXAMPLE, max_nodes=3) is None
 
 
-def test_parse_error_filter():
+def test_parse_error_filter_rejects_grossly_broken_code():
     from data.graph_builder import build_graph as _bg
     malformed = "int broken(int a { return a +++ ; ]]] }"
     assert _bg(malformed) is None
     assert _bg(malformed, drop_parse_errors=False) is not None
+
+
+def test_parse_filter_keeps_code_with_a_localised_error():
+    """A macro or GNU extension tree-sitter flags locally must NOT cost the whole function.
+
+    Rejecting on any ERROR node discarded a measured 12.1% of the real corpus (~3,300 functions).
+    """
+    from data.graph_builder import build_graph as _bg
+    # Realistic FFmpeg/QEMU shape: unknown attribute macro, otherwise perfectly ordinary C.
+    src = """
+    static av_cold int decode_init(AVCodecContext *avctx) {
+        MyCtx *s = avctx->priv_data;
+        int i, ret = 0;
+        for (i = 0; i < 16; i++) {
+            s->buf[i] = i * 2;
+        }
+        if (ret < 0) return ret;
+        return 0;
+    }
+    """
+    g = _bg(src)
+    assert g is not None, "a function with only localised parse noise was discarded"
+    assert g.num_nodes > 20
+
+
+def test_parse_info_reports_error_extent():
+    from data.parser import flatten_ast
+    nodes, _, info = flatten_ast("int ok(void) { return 1; }", return_error=True)
+    assert nodes
+    assert info.has_function_definition
+    assert info.error_fraction == 0.0
+    assert info.is_usable()
+
+    _, _, bad = flatten_ast("]]] ++ ;;; @@@", return_error=True)
+    assert not bad.is_usable()
 
 
 def test_featurizer_dims():

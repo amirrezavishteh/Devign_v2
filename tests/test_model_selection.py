@@ -93,6 +93,49 @@ def test_threshold_tuning_does_not_pick_the_degenerate_cut():
         "expected the F1 objective to skew far more positive than MCC")
 
 
+def test_f1_guarded_dominates_the_default_threshold():
+    """The defining property: never worse than 0.5 on EITHER metric the paper reports.
+
+    0.5 is always in the feasible set, so the guarded search can only improve on it. This is what
+    rules out the failure seen on real data, where an MCC-optimal threshold of 0.996 bought 4
+    points of accuracy at the cost of 14 points of F1 (65.69/37.96).
+    """
+    for seed, rate in ((10, 0.409), (11, 0.30), (12, 0.55)):
+        rng = np.random.default_rng(seed)
+        y = (rng.random(1500) < rate).astype(int)
+        # Saturated probabilities, mimicking an overfit net.
+        logit = 1.4 * (2 * y - 1) + rng.normal(0, 2.2, y.shape)
+        probs = 1.0 / (1.0 + np.exp(-logit * 3))
+
+        thr = best_threshold(y, probs, objective="f1_guarded")
+        tuned = binary_metrics(y, (probs >= thr).astype(int))
+        half = binary_metrics(y, (probs >= 0.5).astype(int))
+
+        assert tuned["accuracy"] + 1e-9 >= half["accuracy"], (
+            f"rate={rate}: accuracy regressed {half['accuracy']:.2f} -> {tuned['accuracy']:.2f}")
+        assert tuned["f1"] + 1e-9 >= half["f1"], (
+            f"rate={rate}: F1 regressed {half['f1']:.2f} -> {tuned['f1']:.2f}")
+
+
+def test_f1_guarded_refuses_the_degenerate_cut():
+    """Plain F1 maximisation can label everything vulnerable; the accuracy guard forbids it."""
+    y = _labels(positive_rate=0.43, seed=13)
+    rng = np.random.default_rng(14)
+    probs = np.clip(0.5 + 0.05 * (2 * y - 1) + rng.normal(0, 0.3, y.shape), 0, 1)
+
+    guarded = (probs >= best_threshold(y, probs, objective="f1_guarded")).astype(int)
+    assert 0 < guarded.sum() < guarded.size, "guarded threshold produced a constant predictor"
+
+    plain = (probs >= best_threshold(y, probs, objective="f1")).astype(int)
+    assert plain.sum() >= guarded.sum(), "expected plain F1 to skew at least as positive"
+
+
+def test_trainer_default_threshold_objective_is_guarded():
+    from training.trainer import TrainConfig
+
+    assert TrainConfig().threshold_objective == "f1_guarded"
+
+
 def test_prob_metrics_handles_single_class_validation_split():
     """A split with one class has no ROC curve; must not crash or fake an improvement."""
     y = np.ones(50, dtype=int)
