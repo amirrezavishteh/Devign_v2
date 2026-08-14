@@ -41,7 +41,7 @@ dataset:
   normalize_adj: false
   sparse: true
   bucket_by_size: true
-  max_nodes_per_batch: 64000
+  max_nodes_per_batch: 24000
 embedding:
   word2vec_dim: 100
   type_dim: 100
