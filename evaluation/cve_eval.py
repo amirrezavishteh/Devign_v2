@@ -59,7 +59,8 @@ def build_unseen_commit_holdout(splits: dict, per_project: int, seed: int = 42):
     return out
 
 
-def evaluate_holdout(cfg, model, device, per_project: int | None = None):
+def evaluate_holdout(cfg, model, device, per_project: int | None = None,
+                     threshold: float = 0.5):
     """Run the model over the unseen-commit vulnerable holdout. Returns metrics + provenance."""
     proc = cfg["data"]["processed_dir"]
     featurizer = NodeFeaturizer.load(os.path.join(proc, "featurizer"))
@@ -88,9 +89,9 @@ def evaluate_holdout(cfg, model, device, per_project: int | None = None):
     ds = DevignDataset(samples, len(featurizer.type_vocab))
     loader = _loader(ds, cfg, make_collate_from_cfg(cfg, EDGE_TYPES), shuffle=False)
 
-    metrics, probs, labels, projects = evaluate(model, loader, device)
+    metrics, probs, labels, projects = evaluate(model, loader, device, threshold=threshold)
     projects = np.array(projects)
-    preds = (probs >= 0.5).astype(int)
+    preds = (probs >= threshold).astype(int)
     per_proj = {}
     for proj in sorted(set(projects.tolist())):
         m = projects == proj
@@ -102,6 +103,7 @@ def evaluate_holdout(cfg, model, device, per_project: int | None = None):
                            "commit-disjoint proxy and is not comparable to its 74.11%."),
         "num_functions": len(samples),
         "num_commits": len({fn.commit_id for fn in funcs}),
+        "threshold": threshold,
         "overall_accuracy": metrics["accuracy"],
         "per_project_accuracy": per_proj,
     }

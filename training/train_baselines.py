@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from models.baselines import (BiLSTMClassifier, CNNClassifier, SequenceDataset,
                              make_seq_collate)
 from training.metrics import binary_metrics
-from training.trainer import TrainConfig, evaluate, train_model
+from training.trainer import evaluate, make_train_config, train_model
 
 
 def _filter_project(samples, project):
@@ -39,19 +39,10 @@ def _seq_loaders(cfg, project=None):
     return {**seq, "train": train_samples, "val": val_samples}, train_loader, val_loader
 
 
-def _train_config(cfg, device, pos_weight):
-    tr = cfg["training"]
-    return TrainConfig(
-        lr=tr["lr"], batch_size=tr["batch_size"], epochs=tr["epochs"],
-        patience=tr["early_stopping_patience"], l2_weight=tr["l2_weight"],
-        grad_clip=tr["grad_clip"], device=device, pos_weight=pos_weight,
-    )
-
-
-def _pos_weight_seq(samples):
-    n_pos = sum(s.label for s in samples)
-    n_neg = len(samples) - n_pos
-    return (n_neg / n_pos) if n_pos > 0 else 1.0
+def _train_config(cfg, device, samples):
+    """Baselines share the graph models' training configuration (monitor, threshold tuning,
+    class weighting) so Table 2 compares like with like."""
+    return make_train_config(cfg, device, [s.label for s in samples])
 
 
 def train_bilstm(cfg, device, attention: bool, verbose=True, project=None):
@@ -62,9 +53,8 @@ def train_bilstm(cfg, device, attention: bool, verbose=True, project=None):
         hidden_dim=bcfg["hidden_dim"], layers=bcfg["layers"], attention=attention,
         dropout=cfg["model"]["dropout"], pretrained=seq["embed"],
     )
-    pw = _pos_weight_seq(seq["train"])
     model, best = train_model(model, train_loader, val_loader,
-                              _train_config(cfg, device, pw), verbose=verbose)
+                              _train_config(cfg, device, seq["train"]), verbose=verbose)
     return model, best
 
 
@@ -76,9 +66,8 @@ def train_cnn(cfg, device, verbose=True, project=None):
         num_filters=ccfg["num_filters"], filter_sizes=tuple(ccfg["filter_sizes"]),
         dropout=cfg["model"]["dropout"], pretrained=seq["embed"],
     )
-    pw = _pos_weight_seq(seq["train"])
     model, best = train_model(model, train_loader, val_loader,
-                              _train_config(cfg, device, pw), verbose=verbose)
+                              _train_config(cfg, device, seq["train"]), verbose=verbose)
     return model, best
 
 

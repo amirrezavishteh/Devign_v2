@@ -2,6 +2,18 @@
 artifacts/
 data/raw/
 data/processed/
+data/processed_commit_disjoint/
+_smoke/
+*.log
+
+# Source bundles built for transferring the code to a training box (see README).
+# Regenerated on demand; committing them puts a zip of the repo inside the repo.
+*.zip
+
+# The Devign paper itself (NeurIPS 2019). Not redistributed here -- read it at
+# https://arxiv.org/abs/1909.03496
+*.PDF
+*.pdf
 
 # Python
 __pycache__/

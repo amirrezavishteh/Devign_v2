@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from data.dataset import BucketBySizeSampler, DevignDataset, make_collate_fn
 from data.graph_builder import EDGE_TYPES
 from models.devign import build_model
-from training.trainer import TrainConfig, evaluate, train_model
+from training.trainer import evaluate, make_train_config, train_model
 from training.utils import ensure_dir, load_config, resolve_device, set_seed
 
 
@@ -81,6 +81,19 @@ def artifact_dir(cfg, model_name: str, project: str | None) -> str:
     return os.path.join(cfg["project"]["artifacts_dir"], model_name, project)
 
 
+def load_threshold(cfg, model_name: str, project: str | None, default: float = 0.5) -> float:
+    """The operating point tuned on validation when this model was trained (meta.json).
+
+    Downstream evaluation must use it rather than assuming 0.5, or it reports a different
+    classifier than the one that was selected.
+    """
+    meta_path = os.path.join(artifact_dir(cfg, model_name, project), "meta.json")
+    if not os.path.exists(meta_path):
+        return default
+    with open(meta_path) as f:
+        return float(json.load(f).get("threshold", default))
+
+
 def train_graph_model(cfg, model_name: str, device, epochs=None, project: str | None = None,
                       verbose: bool = True):
     """Train one graph model on one project's split (or the pooled 'combined' split).
@@ -97,26 +110,23 @@ def train_graph_model(cfg, model_name: str, device, epochs=None, project: str | 
         model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
         type_vocab_size=train_ds.type_vocab_size, num_edge_types=len(EDGE_TYPES))
 
-    tr = cfg["training"]
-    n_pos = sum(s.label for s in train_ds.samples)
-    n_neg = len(train_ds) - n_pos
-    pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.0
-    tcfg = TrainConfig(
-        lr=tr["lr"], batch_size=tr["batch_size"],
-        epochs=epochs or tr["epochs"], patience=tr["early_stopping_patience"],
-        l2_weight=tr["l2_weight"], grad_clip=tr["grad_clip"], device=device,
-        pos_weight=pos_weight,
-    )
-
+    tcfg = make_train_config(cfg, device, [s.label for s in train_ds.samples], epochs)
     model, best = train_model(model, train_loader, val_loader, tcfg, verbose=verbose)
-    final_metrics, _, _, _ = evaluate(model, val_loader, device)
+
+    # Apply the validation-tuned operating point to the held-out test split -- the threshold is a
+    # hyperparameter chosen on val, so using it on test stays unbiased.
+    threshold = best.get("threshold", 0.5)
+    final_metrics, _, _, _ = evaluate(model, val_loader, device, threshold=threshold)
 
     test_metrics = None
     _, test_loader = load_test_loader(cfg, EDGE_TYPES, project)
     if test_loader is not None:
-        test_metrics, _, _, _ = evaluate(model, test_loader, device)
+        test_metrics, _, _, _ = evaluate(model, test_loader, device, threshold=threshold)
 
-    return model, {"best_val": best, "final_val": final_metrics, "test": test_metrics}, train_ds
+    return (model,
+            {"best_val": best, "final_val": final_metrics, "test": test_metrics,
+             "threshold": threshold},
+            train_ds)
 
 
 def save_graph_model(cfg, model, model_name: str, project: str | None, metrics: dict,
@@ -129,6 +139,9 @@ def save_graph_model(cfg, model, model_name: str, project: str | None, metrics: 
         "model": model_name, "project": project or "combined",
         "code_dim": cfg["embedding"]["word2vec_dim"], "type_vocab_size": type_vocab_size,
         "num_edge_types": len(EDGE_TYPES), "edge_types": EDGE_TYPES,
+        # The model's operating point, tuned on validation. Downstream evaluation (Table 3, the
+        # Q5 holdout, inference) must use this rather than assuming 0.5.
+        "threshold": metrics.get("threshold", 0.5),
     }
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
@@ -152,10 +165,12 @@ def main():
     model, metrics, train_ds = train_graph_model(
         cfg, args.model, device, epochs=args.epochs, project=args.project)
     best = metrics["best_val"]
-    print(f"[train] best val: acc {best['accuracy']:.2f} f1 {best['f1']:.2f}")
+    print(f"[train] best val: acc {best['accuracy']:.2f} f1 {best['f1']:.2f} "
+          f"auc {best.get('auc', float('nan')):.2f} @ threshold {metrics['threshold']:.3f}")
     if metrics["test"]:
         t = metrics["test"]
-        print(f"[train] held-out test: acc {t['accuracy']:.2f} f1 {t['f1']:.2f}")
+        print(f"[train] held-out test: acc {t['accuracy']:.2f} f1 {t['f1']:.2f} "
+              f"auc {t.get('auc', float('nan')):.2f}")
 
     out_dir = save_graph_model(cfg, model, args.model, args.project, metrics,
                                train_ds.type_vocab_size)

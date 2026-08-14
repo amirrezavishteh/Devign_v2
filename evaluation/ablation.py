@@ -11,7 +11,7 @@ import os
 
 from data.dataset import DevignDataset
 from models.devign import build_model
-from training.trainer import TrainConfig, train_model
+from training.trainer import make_train_config, train_model
 
 
 def _loaders_for_edges(cfg, edge_types, project=None):
@@ -31,12 +31,6 @@ def run_single_edge(cfg, model_name, edge_type, device, epochs=None, verbose=Fal
     train_ds, val_ds, train_loader, val_loader = _loaders_for_edges(cfg, edge_types, project)
     model = build_model(model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
                         type_vocab_size=train_ds.type_vocab_size, num_edge_types=1)
-    tr = cfg["training"]
-    n_pos = sum(s.label for s in train_ds.samples)
-    pos_weight = ((len(train_ds) - n_pos) / n_pos) if n_pos > 0 else 1.0
-    tcfg = TrainConfig(lr=tr["lr"], batch_size=tr["batch_size"],
-                       epochs=epochs or tr["epochs"], patience=tr["early_stopping_patience"],
-                       l2_weight=tr["l2_weight"], grad_clip=tr["grad_clip"], device=device,
-                       pos_weight=pos_weight)
+    tcfg = make_train_config(cfg, device, [s.label for s in train_ds.samples], epochs)
     model, best = train_model(model, train_loader, val_loader, tcfg, verbose=verbose)
     return best

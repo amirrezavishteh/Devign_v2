@@ -16,14 +16,13 @@ import pickle
 import torch
 from torch.utils.data import DataLoader
 
-from data.dataset import DevignDataset, build_samples
 from data.graph_builder import EDGE_TYPES
 from data.word2vec_embed import NodeFeaturizer
-from evaluation.imbalanced import evaluate_static_analyzers, make_imbalanced
-from evaluation.report import format_table3, per_project_eval
+from evaluation.imbalanced import (evaluate_devign_imbalanced,
+                                   evaluate_static_analyzers, make_imbalanced)
+from evaluation.report import format_table3
 from models.devign import build_model
-from scripts.train import _loader, artifact_dir, make_collate_from_cfg
-from training.trainer import evaluate
+from scripts.train import artifact_dir
 from training.utils import load_config, resolve_device, set_seed
 
 
@@ -57,21 +56,23 @@ def main():
     for label, r in sa.items():
         results[label] = r["metrics"]
 
-    # Devign.
+    # Devign. The threshold is recalibrated to the imbalanced prevalence on a validation
+    # subsample -- see evaluate_devign_imbalanced.
     meta_dir = artifact_dir(cfg, "devign", args.project)
     if os.path.exists(os.path.join(meta_dir, "model.pt")):
         featurizer = NodeFeaturizer.load(os.path.join(proc, "featurizer"))
-        samples = build_samples(imb, featurizer, EDGE_TYPES, cfg["data"]["max_nodes"])
-        ds = DevignDataset(samples, len(featurizer.type_vocab))
-        loader = _loader(ds, cfg, make_collate_from_cfg(cfg, EDGE_TYPES), shuffle=False)
         model = build_model("devign", cfg, code_dim=cfg["embedding"]["word2vec_dim"],
                             type_vocab_size=len(featurizer.type_vocab),
                             num_edge_types=len(EDGE_TYPES))
         model.load_state_dict(torch.load(os.path.join(meta_dir, "model.pt"), map_location=device,
                                          weights_only=True))
         model.to(device)
-        _, probs, labels, projects = evaluate(model, loader, device)
-        results["Devign (Composite)"] = per_project_eval(probs, labels, projects)
+        metrics, thr = evaluate_devign_imbalanced(cfg, model, device, splits, featurizer,
+                                                 EDGE_TYPES)
+        if metrics:
+            results["Devign (Composite)"] = metrics
+            print(f"[imbalanced] Devign threshold recalibrated to {thr:.3f} for "
+                  f"{cfg['data']['imbalanced_vuln_ratio']:.0%} prevalence")
     else:
         print("[imbalanced] no trained Devign model found; run scripts.train first.")
 

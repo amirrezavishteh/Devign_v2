@@ -129,13 +129,10 @@ def _assemble_table2(cfg, graph_results, baseline_results, use_test: bool):
 def _run_imbalanced(cfg, device):
     import pickle
 
-    from data.dataset import DevignDataset, build_samples
     from data.word2vec_embed import NodeFeaturizer
-    from evaluation.imbalanced import evaluate_static_analyzers, make_imbalanced
-    from evaluation.report import per_project_eval
+    from evaluation.imbalanced import (evaluate_devign_imbalanced,
+                                       evaluate_static_analyzers, make_imbalanced)
     from models.devign import build_model
-    from scripts.train import _loader, make_collate_from_cfg
-    from training.trainer import evaluate
 
     proc = cfg["data"]["processed_dir"]
     with open(os.path.join(proc, "splits.pkl"), "rb") as f:
@@ -156,16 +153,17 @@ def _run_imbalanced(cfg, device):
         from data.graph_builder import EDGE_TYPES
 
         featurizer = NodeFeaturizer.load(os.path.join(proc, "featurizer"))
-        samples = build_samples(imb, featurizer, EDGE_TYPES, cfg["data"]["max_nodes"])
-        ds = DevignDataset(samples, len(featurizer.type_vocab))
-        loader = _loader(ds, cfg, make_collate_from_cfg(cfg, EDGE_TYPES), shuffle=False)
         model = build_model("devign", cfg, code_dim=cfg["embedding"]["word2vec_dim"],
                             type_vocab_size=len(featurizer.type_vocab),
                             num_edge_types=len(EDGE_TYPES))
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.to(device)
-        _, probs, labels, projects = evaluate(model, loader, device)
-        results["Devign (Composite)"] = per_project_eval(probs, labels, projects)
+        metrics, thr = evaluate_devign_imbalanced(cfg, model, device, splits, featurizer,
+                                                 EDGE_TYPES)
+        if metrics:
+            results["Devign (Composite)"] = metrics
+            print(f"[reproduce] Table 3 Devign threshold recalibrated to "
+                  f"{thr:.3f} for {cfg['data']['imbalanced_vuln_ratio']:.0%} prevalence")
     else:
         print("[reproduce] no Combined Devign model found; skipping Devign row in Table 3")
 
@@ -190,7 +188,9 @@ def _run_q5(cfg, device):
                         type_vocab_size=len(featurizer.type_vocab), num_edge_types=len(EDGE_TYPES))
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
-    return evaluate_holdout(cfg, model, device)
+    from scripts.train import load_threshold
+    return evaluate_holdout(cfg, model, device,
+                            threshold=load_threshold(cfg, "devign", "combined"))
 
 
 def main():
