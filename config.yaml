@@ -66,7 +66,11 @@ dataset:
 embedding:
   word2vec_dim: 100
   type_dim: 100            # label-encoded node Type, embedded to this size -> concat with code = 200-d xv
-  word2vec_min_count: 1
+  # min_count 1 produced a 98,021-token vocabulary from ~18k real functions: most tokens occur
+  # exactly once, so their vectors are noise and project-specific identifiers become a
+  # memorisation channel. Rare tokens now fall back to a zero code-vector (see
+  # NodeFeaturizer.featurize_graph), i.e. uninformative rather than spuriously discriminative.
+  word2vec_min_count: 3
   word2vec_window: 5
   word2vec_epochs: 10
   word2vec_workers: 4
@@ -84,16 +88,35 @@ model:
     pool2_stride: [1, 2]
     conv_channels: 50
     mlp_hidden: 64
-  dropout: 0.2
+  # Raised from 0.2: on real data training loss fell 0.82 -> 0.13 while validation accuracy stayed
+  # flat at ~62%, i.e. ~1M parameters memorising ~10k training graphs. The paper does not specify
+  # a dropout rate, so this is a free hyperparameter rather than a deviation.
+  dropout: 0.5
 
 training:
   optimizer: adam
   lr: 0.0001
   batch_size: 128
   epochs: 200
-  early_stopping_patience: 100
+  # Paper says 100. Lowered because with a sane selection metric runs plateau by ~40 epochs, and
+  # patience 100 means early stopping effectively never fires (every run costs the full 200).
+  early_stopping_patience: 30
   l2_weight: 0.0001
   grad_clip: 5.0
+  # Checkpoint-selection metric. MUST NOT be f1: at a fixed 0.5 threshold on this ~45%-positive
+  # data a degenerate all-positive classifier scores F1 ~60-67%, which a properly trained model
+  # never beats, so monitoring f1 restores an untrained early epoch. AUC is 50 for any constant
+  # predictor and so cannot be gamed that way.
+  monitor: auc
+  # Tune the decision threshold on validation after restoring the best checkpoint.
+  tune_threshold: true
+  # Objective for that tuning. MCC, not f1: an F1-optimal threshold can itself be the degenerate
+  # all-positive cut (F1 ~60% on this data), which is the same trap as monitoring f1. MCC is 0
+  # for any constant predictor and balances both classes.
+  threshold_objective: mcc
+  # The paper does no class reweighting, and the data is 45.6% positive so it needs none. Turning
+  # this on biases predictions positive, which is exactly the degenerate regime above.
+  class_weighting: false
 
 baselines:
   bilstm:

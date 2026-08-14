@@ -12,8 +12,20 @@ from typing import Optional
 import tree_sitter_c
 from tree_sitter import Language, Node, Parser
 
-_LANGUAGE = Language(tree_sitter_c.language())
-_PARSER = Parser(_LANGUAGE)
+try:
+    _LANGUAGE = Language(tree_sitter_c.language())
+    _PARSER = Parser(_LANGUAGE)
+except ValueError as exc:  # pragma: no cover - environment/dependency mismatch
+    # "Incompatible Language version N" means the installed tree-sitter RUNTIME is older than the
+    # grammar ABI that tree-sitter-c ships. pip can resolve this pair inconsistently, and the raw
+    # error names neither package, so make the fix explicit.
+    raise RuntimeError(
+        f"tree-sitter runtime/grammar ABI mismatch: {exc}\n"
+        "The installed `tree-sitter` is too old for the installed `tree-sitter-c` grammar.\n"
+        "Fix with:\n"
+        "    pip install -U 'tree-sitter>=0.24.0' 'tree-sitter-c>=0.23.0'\n"
+        "(verified working combination: tree-sitter 0.25.2 + tree-sitter-c 0.24.2)"
+    ) from exc
 
 # Tree-sitter node types that should NOT be flattened into the graph (punctuation / anonymous
 # tokens with no semantic value for vulnerability patterns), keeps graphs smaller and cleaner.

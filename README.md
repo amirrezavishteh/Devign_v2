@@ -2,7 +2,8 @@
 
 An end-to-end, runnable reproduction of **Devign** (Zhou et al., *"Devign: Effective Vulnerability
 Identification by Learning Comprehensive Program Semantics via Graph Neural Networks"*, NeurIPS
-2019) in PyTorch, trained on the **paper authors' own released dataset** — not a synthetic stand-in.
+2019 — [arXiv:1909.03496](https://arxiv.org/abs/1909.03496)) in PyTorch, trained on the **paper
+authors' own released dataset** — not a synthetic stand-in.
 
 It encodes each C function as a **composite multi-edge graph** (AST + CFG + DFG + NCS), learns
 node representations with a **Gated Graph Recurrent layer**, and classifies whole graphs with the
@@ -23,6 +24,7 @@ and have been run on real data (see §5).
 | Devign model + Ggrn flat-summation variant (Eq. 5) | 2.4 | [models/devign.py](models/devign.py) |
 | Baselines: Metrics+XGBoost, BiLSTM, BiLSTM+Att, CNN | 3.2 | [models/baselines.py](models/baselines.py), [models/metrics_xgboost.py](models/metrics_xgboost.py) |
 | Training (Adam, lr 1e-4, bs 128 via gradient accumulation, L2, early stop) | 3.3 | [training/trainer.py](training/trainer.py) |
+| Checkpoint selection on AUC + validation-tuned decision threshold | — | [training/metrics.py](training/metrics.py), [training/trainer.py](training/trainer.py) |
 | Table 2 / Table 3 / ablation / commit-disjoint leakage check | 3.3 | [scripts/](scripts/), [evaluation/](evaluation/) |
 
 ### The 7 edge types
@@ -97,6 +99,22 @@ no faithful reproduction can produce those two columns from public data.
 
 Functions with **> 500 nodes, or that tree-sitter could not parse cleanly, are filtered out**
 (`data.max_nodes`, `drop_parse_errors` in `build_graph`) — the paper reports ~15% dropped this way.
+
+### Model selection and the decision threshold (important)
+Checkpoints are selected on validation **AUC**, not F1, and this is not a stylistic choice. On this
+43–51%-positive data a degenerate "predict almost everything vulnerable" classifier scores
+F1 ≈ 60–67% at a 0.5 threshold, and a properly trained model balancing precision against recall
+never beats it — so selecting on F1@0.5 restores an early, untrained epoch. Measured on real qemu:
+selecting on F1 saved epoch 9 (**53.99%** accuracy) over epoch 70 (**62.99%**). AUC is exactly 50
+for any constant predictor and cannot be gamed that way.
+
+After the best checkpoint is restored, the decision threshold is tuned on validation (objective:
+**MCC**, since an F1-optimal threshold can itself be the degenerate all-positive cut) and persisted
+to `meta.json`. Every downstream consumer — Table 2/3, the Q5 holdout, `inference.predict` — reads
+that threshold instead of assuming 0.5. For Table 3 the threshold is **recalibrated** on a
+validation subsample at the imbalanced 10% prevalence, because a cut tuned at ~46% prevalence drives
+F1 to ~0 on a 10%-positive set. `training.class_weighting` is off by default: the paper does no
+reweighting, and upweighting positives pushes the model toward exactly the degenerate regime above.
 
 **Split.** Class-stratified **75 / 12.5 / 12.5** (train / val / test) by default — the paper's own
 75% training fraction is preserved, but its 25% remainder is halved so early stopping (on val) and

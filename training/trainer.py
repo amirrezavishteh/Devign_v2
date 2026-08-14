@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from training.metrics import binary_metrics
+from training.metrics import best_threshold, binary_metrics, prob_metrics
 
 
 @dataclass
@@ -25,12 +25,50 @@ class TrainConfig:
     l2_weight: float = 1e-4
     grad_clip: float = 5.0
     device: str = "cpu"
-    monitor: str = "f1"   # early-stopping metric on validation
+    # Model-selection metric on validation. Defaults to AUC, NOT F1: at a fixed 0.5 threshold on
+    # this ~45%-positive data, a degenerate "almost everything is vulnerable" classifier scores
+    # F1 ~60-67% and a genuinely trained model never beats it, so monitoring F1 restores an
+    # early, untrained checkpoint. A constant predictor scores AUC 50, so AUC cannot be gamed
+    # that way. See training/metrics.py.
+    monitor: str = "auc"
+    # Tune the decision threshold on validation after restoring the best checkpoint, and report
+    # at that threshold instead of an arbitrary 0.5. MCC is the objective rather than F1 because
+    # an F1-optimal threshold can itself be the degenerate all-positive cut.
+    tune_threshold: bool = True
+    threshold_objective: str = "mcc"
     pos_weight: float | None = None
     # When the loader yields node-budget micro-batches (see data.dataset.BucketBySizeSampler),
     # accumulate gradients until `batch_size` graphs have been seen before stepping, so the
     # effective batch size stays the paper's 128 no matter how the micro-batches fall out.
     accumulate_to_batch_size: bool = True
+
+
+def make_train_config(cfg: dict, device: str, train_labels=None, epochs: int | None = None,
+                      **overrides) -> TrainConfig:
+    """Build a TrainConfig from config.yaml. Single source of truth for every training entry point.
+
+    `train_labels` is an iterable of 0/1 labels used only when `training.class_weighting` is on.
+    Class weighting defaults OFF: the paper does no reweighting, and on this ~45%-positive data it
+    biases the model toward the all-positive regime that then wins checkpoint selection.
+    """
+    tr = cfg["training"]
+    pos_weight = None
+    if tr.get("class_weighting", False) and train_labels is not None:
+        labels = [int(x) for x in train_labels]
+        n_pos = sum(labels)
+        n_neg = len(labels) - n_pos
+        pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.0
+
+    kwargs = dict(
+        lr=tr["lr"], batch_size=tr["batch_size"],
+        epochs=epochs or tr["epochs"], patience=tr["early_stopping_patience"],
+        l2_weight=tr["l2_weight"], grad_clip=tr["grad_clip"], device=device,
+        monitor=tr.get("monitor", "auc"), tune_threshold=tr.get("tune_threshold", True),
+        threshold_objective=tr.get("threshold_objective", "mcc"),
+        pos_weight=pos_weight,
+    )
+    kwargs.update(overrides)
+    return TrainConfig(**kwargs)
 
 
 def _move_batch(batch, device):
@@ -61,8 +99,7 @@ def evaluate(model, loader, device, threshold: float = 0.5):
         all_projects.extend(projects)
     probs = np.concatenate(all_probs)
     labels = np.concatenate(all_labels)
-    preds = (probs >= threshold).astype(int)
-    metrics = binary_metrics(labels, preds)
+    metrics = prob_metrics(labels, probs, threshold)
     return metrics, probs, labels, all_projects
 
 
@@ -146,4 +183,15 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
             break
 
     model.load_state_dict(best_state)
+
+    # Pick the operating point on validation using the restored (best) weights, then report at it.
+    # Done after restoration so the threshold belongs to the checkpoint we actually ship.
+    final_val, probs, labels, _ = evaluate(model, val_loader, device)
+    threshold = (best_threshold(labels, probs, cfg.threshold_objective)
+                 if cfg.tune_threshold else 0.5)
+    best_metrics = prob_metrics(labels, probs, threshold)
+    if verbose:
+        print(f"  restored best ({cfg.monitor} {best_score:.2f}) | threshold {threshold:.3f} "
+              f"-> val acc {best_metrics['accuracy']:.2f} f1 {best_metrics['f1']:.2f} "
+              f"auc {best_metrics['auc']:.2f}")
     return model, best_metrics

@@ -21,7 +21,7 @@ from data.download import RawFunction
 from data.graph_builder import EDGE_TYPES, build_graph
 from data.word2vec_embed import NodeFeaturizer
 from models.devign import build_model
-from scripts.train import artifact_dir, make_collate_from_cfg
+from scripts.train import artifact_dir, load_threshold, make_collate_from_cfg
 from training.utils import load_config, resolve_device
 
 
@@ -48,9 +48,12 @@ class DevignPredictor:
         self.model.load_state_dict(torch.load(model_path, map_location=self.device,
                                               weights_only=True))
         self.model.to(self.device).eval()
+        # The operating point chosen on validation during training, not an assumed 0.5.
+        self.threshold = load_threshold(self.cfg, model_name, project)
 
     @torch.no_grad()
-    def predict(self, source: str, threshold: float = 0.5) -> dict:
+    def predict(self, source: str, threshold: float | None = None) -> dict:
+        threshold = self.threshold if threshold is None else threshold
         graph = build_graph(source, max_nodes=self.cfg["data"]["max_nodes"])
         if graph is None or graph.num_nodes == 0:
             return {"error": "could not parse function, it has a syntax error, or it exceeds "
@@ -66,6 +69,7 @@ class DevignPredictor:
         return {
             "vulnerable": bool(prob >= threshold),
             "probability": prob,
+            "threshold": threshold,
             "num_nodes": graph.num_nodes,
             "edge_counts": {et: len(graph.edges.get(et, [])) for et in self.edge_types},
         }
@@ -84,7 +88,8 @@ def main():
                     help="which trained model to load (default: the pooled Combined model)")
     ap.add_argument("--file", default=None)
     ap.add_argument("--code", default=None)
-    ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--threshold", type=float, default=None,
+                    help="override the model's validation-tuned threshold")
     args = ap.parse_args()
 
     if args.file:
@@ -106,7 +111,7 @@ def main():
         sys.exit(2)
     verdict = "VULNERABLE" if result["vulnerable"] else "NON-VULNERABLE"
     print(f"Prediction : {verdict}")
-    print(f"P(vuln)    : {result['probability']:.4f}")
+    print(f"P(vuln)    : {result['probability']:.4f}  (threshold {result['threshold']:.3f})")
     print(f"Nodes      : {result['num_nodes']}")
     print(f"Edges      : {result['edge_counts']}")
 

@@ -19,7 +19,7 @@ from data.graph_builder import EDGE_TYPES
 from data.word2vec_embed import NodeFeaturizer
 from evaluation.cve_eval import evaluate_holdout
 from models.devign import build_model
-from scripts.train import artifact_dir
+from scripts.train import artifact_dir, load_threshold
 from training.utils import load_config, resolve_device, set_seed
 
 
@@ -42,7 +42,8 @@ def main():
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
 
-    res = evaluate_holdout(cfg, model, device)
+    res = evaluate_holdout(cfg, model, device,
+                           threshold=load_threshold(cfg, "devign", args.project))
     print(f"[q5] {res['kind']} -- {res['num_functions']} functions")
     if res["num_functions"] == 0:
         print(f"[q5] {res.get('note', 'no functions available')}")

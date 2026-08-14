@@ -24,7 +24,7 @@ from data.graph_builder import EDGE_TYPES
 from data.prepare import prepare
 from models.devign import build_model
 from scripts.train import artifact_dir, load_graph_loaders
-from training.trainer import TrainConfig, evaluate, train_model
+from training.trainer import evaluate, make_train_config, train_model
 from training.utils import ensure_dir, load_config, resolve_device, set_seed
 
 
@@ -73,13 +73,7 @@ def main():
         model = build_model(model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
                             type_vocab_size=train_ds.type_vocab_size,
                             num_edge_types=len(EDGE_TYPES))
-        tr = cfg["training"]
-        n_pos = sum(s.label for s in train_ds.samples)
-        pw = ((len(train_ds) - n_pos) / n_pos) if n_pos > 0 else 1.0
-        tcfg = TrainConfig(lr=tr["lr"], batch_size=tr["batch_size"],
-                           epochs=args.epochs or tr["epochs"],
-                           patience=tr["early_stopping_patience"], l2_weight=tr["l2_weight"],
-                           grad_clip=tr["grad_clip"], device=device, pos_weight=pw)
+        tcfg = make_train_config(cfg, device, [s.label for s in train_ds.samples], args.epochs)
         print(f"[leakage] training {model_name} on commit-disjoint Combined "
               f"({len(train_ds)} train / {len(val_ds)} val)")
         _, best = train_model(model, train_loader, val_loader, tcfg, verbose=True)
