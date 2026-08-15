@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from data.dataset import DevignDataset
+from data.dataset import DevignDataset, positive_rate
 from models.devign import build_model
 from training.trainer import make_train_config, train_model
 
@@ -30,7 +30,8 @@ def run_single_edge(cfg, model_name, edge_type, device, epochs=None, verbose=Fal
     edge_types = [edge_type]
     train_ds, val_ds, train_loader, val_loader = _loaders_for_edges(cfg, edge_types, project)
     model = build_model(model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
-                        type_vocab_size=train_ds.type_vocab_size, num_edge_types=1)
+                        type_vocab_size=train_ds.type_vocab_size, num_edge_types=1,
+                        pos_rate=positive_rate(train_ds))
     tcfg = make_train_config(cfg, device, [s.label for s in train_ds.samples], epochs)
     model, best = train_model(model, train_loader, val_loader, tcfg, verbose=verbose)
     return best

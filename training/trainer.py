@@ -38,6 +38,18 @@ class TrainConfig:
     tune_threshold: bool = True
     threshold_objective: str = "f1_guarded"
     pos_weight: float | None = None
+    # Learning-rate schedule. "none" is the paper (Sec 3.3 fixes lr=1e-4 for the whole run);
+    # "plateau" halves the LR when the monitored validation metric stalls.
+    #
+    # Why this exists: Eq. 9's readout multiplies two MLP outputs, so at init the whole batch's
+    # logits span ~6e-4 and the gradient reaching the GGNN trunk is ~53x weaker than it would be
+    # through a linear head (measured). At lr=1e-4 the first ~10 epochs are spent escaping that
+    # dead zone rather than learning. A larger initial LR plus decay-on-plateau gets past it
+    # without giving up the fine convergence the paper's small LR buys later.
+    lr_schedule: str = "none"
+    lr_factor: float = 0.5
+    lr_patience: int = 5
+    min_lr: float = 1e-6
     # When the loader yields node-budget micro-batches (see data.dataset.BucketBySizeSampler),
     # accumulate gradients until `batch_size` graphs have been seen before stepping, so the
     # effective batch size stays the paper's 128 no matter how the micro-batches fall out.
@@ -74,6 +86,8 @@ def make_train_config(cfg: dict, device: str, train_labels=None, epochs: int | N
         monitor=tr.get("monitor", "auc"), tune_threshold=tr.get("tune_threshold", True),
         threshold_objective=tr.get("threshold_objective", "f1_guarded"),
         pos_weight=pos_weight,
+        lr_schedule=tr.get("lr_schedule", "none"), lr_factor=tr.get("lr_factor", 0.5),
+        lr_patience=tr.get("lr_patience", 5), min_lr=tr.get("min_lr", 1e-6),
     )
     kwargs.update(overrides)
     return TrainConfig(**kwargs)
@@ -116,6 +130,14 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
     device = cfg.device
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.l2_weight)
+    # Every metric `monitor` can name (auc/f1/accuracy/mcc) is higher-is-better, hence mode="max".
+    scheduler = None
+    if cfg.lr_schedule == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", factor=cfg.lr_factor, patience=cfg.lr_patience,
+            min_lr=cfg.min_lr)
+    elif cfg.lr_schedule not in ("none", None):
+        raise ValueError(f"unknown training.lr_schedule: {cfg.lr_schedule!r} (use none|plateau)")
     pos_weight = torch.tensor([cfg.pos_weight], device=device) if cfg.pos_weight else None
     # `sum` reduction so gradient accumulation across unequal micro-batches weights each GRAPH
     # equally; we divide by the number of graphs actually accumulated before stepping.
@@ -133,6 +155,10 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         ckpt = torch.load(cfg.checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        # Without this a resumed run silently restarts at the full LR, so the schedule depends on
+        # how many times the job was preempted.
+        if scheduler is not None and ckpt.get("scheduler") is not None:
+            scheduler.load_state_dict(ckpt["scheduler"])
         best_state = ckpt["best_state"]
         best_score = ckpt["best_score"]
         best_metrics = ckpt["best_metrics"]
@@ -150,7 +176,8 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         torch.save({"epoch": epoch, "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(), "best_state": best_state,
                     "best_score": best_score, "best_metrics": best_metrics,
-                    "epochs_no_improve": epochs_no_improve}, tmp)
+                    "epochs_no_improve": epochs_no_improve,
+                    "scheduler": scheduler.state_dict() if scheduler else None}, tmp)
         os.replace(tmp, cfg.checkpoint_path)   # atomic: a crash mid-write can't corrupt it
 
     for epoch in range(start_epoch, cfg.epochs + 1):
@@ -206,7 +233,7 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
                     pending = 0
         _step(pending)  # flush the epoch's trailing partial batch
 
-        val_metrics, _, _, _ = evaluate(model, val_loader, device)
+        val_metrics, val_probs, _, _ = evaluate(model, val_loader, device)
         score = val_metrics[cfg.monitor]
         improved = score > best_score
         if improved:
@@ -217,9 +244,17 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         else:
             epochs_no_improve += 1
 
+        if scheduler is not None:
+            scheduler.step(score)
+
         if verbose and (epoch % 5 == 0 or epoch == 1 or improved):
+            # `spread` is the width of the predicted-probability band. Eq. 9's multiplicative
+            # readout starts almost degenerate (~6e-4 wide), so a spread still under ~0.05 after a
+            # few epochs means the head has not come alive and nothing downstream is meaningful.
+            spread = float(val_probs.max() - val_probs.min()) if val_probs.size else 0.0
             print(f"  epoch {epoch:3d} | loss {total_loss / max(1, n_batches):.4f} "
                   f"| val acc {val_metrics['accuracy']:.2f} f1 {val_metrics['f1']:.2f} "
+                  f"| spread {spread:.3f} | lr {optimizer.param_groups[0]['lr']:.2e} "
                   f"| best {cfg.monitor} {best_score:.2f}")
 
         _save_checkpoint(epoch)

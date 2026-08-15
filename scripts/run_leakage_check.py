@@ -20,6 +20,7 @@ import copy
 import json
 import os
 
+from data.dataset import positive_rate
 from data.graph_builder import EDGE_TYPES
 from data.prepare import prepare
 from models.devign import build_model
@@ -72,7 +73,8 @@ def main():
         train_ds, val_ds, train_loader, val_loader = load_graph_loaders(cfg, EDGE_TYPES)
         model = build_model(model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
                             type_vocab_size=train_ds.type_vocab_size,
-                            num_edge_types=len(EDGE_TYPES))
+                            num_edge_types=len(EDGE_TYPES),
+                            pos_rate=positive_rate(train_ds))
         tcfg = make_train_config(cfg, device, [s.label for s in train_ds.samples], args.epochs)
         print(f"[leakage] training {model_name} on commit-disjoint Combined "
               f"({len(train_ds)} train / {len(val_ds)} val)")

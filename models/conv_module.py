@@ -5,7 +5,8 @@ Two parallel branches:
     Y^(1) = sigma(H^(T)),       Y^(2) = sigma(Y^(1))          # branch over H alone
     y~ = Sigmoid( AVG( MLP(Z^(l)) (.) MLP(Y^(l)) ) )          # (.) = elementwise product
 
-where sigma(.) = MAXPOOL(ReLU(CONV(.))) (Eq. 6) and l=2 conv layers.
+where sigma(.) = MAXPOOL(ReLU(CONV(.))) (Eq. 6) and l=2 conv layers. The AVG in Eq. 9 runs over
+node positions -- see `ConvModule.readout` for that and for the alternative.
 
 Layout
 ------
@@ -35,6 +36,8 @@ padding is right-aligned, output row i is real iff input row i is real -- so the
 just `mask[:, :H_out]`.
 """
 from __future__ import annotations
+
+import math
 
 import torch
 import torch.nn as nn
@@ -118,7 +121,7 @@ class _SigmaStack(nn.Module):
             h = max(4, self.pool2_height + 1)
             dummy = torch.zeros(1, 1, h, in_width)
             out = self.pool2(F.relu(self.conv2(self.pool1(F.relu(self.conv1(dummy))))))
-        return out.shape[-1]
+        return int(out.shape[-1])
 
     @property
     def min_nodes(self) -> int:
@@ -132,7 +135,10 @@ class _SigmaStack(nn.Module):
         # features: [B, C, H, W'] --masked max over H--> [B, C, W'] --flatten--> C*W'
         return self.conv_channels if self.axis == "nodes" else self.conv_channels * self.out_width
 
-    def forward(self, feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, feat: torch.Tensor, mask: torch.Tensor):
+        """Returns (activations, pooled_mask). `pooled_mask` is [B, 1, M'] for the ``nodes`` axis
+        (node validity at the post-pool resolution, needed by the avg_nodes readout) and None for
+        the ``features`` axis, where the node axis survives as a spatial dimension instead."""
         if self.axis == "nodes":
             # [B, M, W] -> [B, W, M]: features are channels, the node sequence is the signal.
             x = feat.transpose(1, 2)
@@ -150,7 +156,7 @@ class _SigmaStack(nn.Module):
             x = F.relu(self.conv2(x)) * m                 # conv2 kernel 1 keeps length
             x = self.pool2(x)
             m = (self.pool2(m) > 0).to(x.dtype)
-            return x * m                                  # [B, C, M'], pads exactly 0
+            return x * m, m                               # [B, C, M'], pads exactly 0
 
         x = feat.unsqueeze(1)                    # [B, 1, M, W]
         x = self.pool1(F.relu(self.conv1(x)))    # height untouched (kernel/stride 1)
@@ -158,7 +164,7 @@ class _SigmaStack(nn.Module):
         if self.pool2_height > 1:
             x = _neg_inf_pad(x, mask)            # keep padding out of the node-mixing pool
         x = self.pool2(x)                        # [B, C, H_out, W']
-        return x
+        return x, None
 
 
 def _masked_node_maxpool(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -173,9 +179,17 @@ def _masked_node_maxpool(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor
     return pooled
 
 
+def prior_logit(pos_rate: float | None) -> float:
+    """log(p / (1-p)) for the training positive rate, clamped away from the asymptotes."""
+    if not pos_rate:
+        return 0.0
+    p = min(max(float(pos_rate), 1e-4), 1.0 - 1e-4)
+    return math.log(p / (1.0 - p))
+
+
 class ConvModule(nn.Module):
     def __init__(self, hidden_dim: int, init_dim: int, conv_cfg: dict, mlp_hidden: int,
-                 dropout: float = 0.2):
+                 dropout: float = 0.2, pos_rate: float | None = None):
         super().__init__()
         ch = conv_cfg["conv_channels"]
         zx_width = hidden_dim + init_dim   # width of [H, x]
@@ -184,12 +198,57 @@ class ConvModule(nn.Module):
         self.branch_y = _SigmaStack(ch, y_width, conv_cfg)
         self.dropout = nn.Dropout(dropout)
 
-        flat_zx = self.branch_zx.readout_dim
-        flat_y = self.branch_y.readout_dim
-        self.mlp_zx = nn.Sequential(
-            nn.Flatten(), nn.Linear(flat_zx, mlp_hidden), nn.ReLU(), nn.Linear(mlp_hidden, MLP_OUT))
-        self.mlp_y = nn.Sequential(
-            nn.Flatten(), nn.Linear(flat_y, mlp_hidden), nn.ReLU(), nn.Linear(mlp_hidden, MLP_OUT))
+        # How the node axis is collapsed into a graph-level prediction.
+        #
+        #   "avg_nodes" (default) -- Eq. 9 as written: apply the MLPs at every surviving node
+        #       position, multiply the two branches elementwise, and AVG over real positions. The
+        #       average is what makes the readout sensitive to *how many* sites look vulnerable.
+        #   "max_nodes" -- collapse the node axis with a global max BEFORE the MLPs, so the graph
+        #       is summarised by one C-dim "did any window fire this filter" vector. That answers
+        #       a different question (any vs how many) and is length-biased, since a longer
+        #       function gets more chances to trigger a high max.
+        self.readout = str(conv_cfg.get("readout", "avg_nodes")).lower()
+        if self.readout not in {"avg_nodes", "max_nodes"}:
+            raise ValueError(f"conv.readout must be avg_nodes|max_nodes, got {self.readout!r}")
+        if self.readout == "avg_nodes" and self.branch_zx.axis != "nodes":
+            raise ValueError(
+                "conv.readout: avg_nodes requires conv.conv_axis: nodes -- on the features axis "
+                "the node axis is a spatial dimension of a 4-D map, not a sequence position.")
+
+        if self.readout == "avg_nodes":
+            # Applied per node position, so no Flatten: nn.Linear maps the last (channel) dim of
+            # [B, M', C]. Output stays [B, M', MLP_OUT] and is averaged in `forward`.
+            def _head(in_dim: int) -> nn.Module:
+                return nn.Sequential(nn.Linear(in_dim, mlp_hidden), nn.ReLU(),
+                                     nn.Linear(mlp_hidden, MLP_OUT))
+            self.mlp_zx = _head(self.branch_zx.conv_channels)
+            self.mlp_y = _head(self.branch_y.conv_channels)
+        else:
+            def _head(in_dim: int) -> nn.Module:
+                return nn.Sequential(nn.Flatten(), nn.Linear(in_dim, mlp_hidden), nn.ReLU(),
+                                     nn.Linear(mlp_hidden, MLP_OUT))
+            self.mlp_zx = _head(self.branch_zx.readout_dim)
+            self.mlp_y = _head(self.branch_y.readout_dim)
+
+        # Learnable affine on the graph-level logit. Eq. 9 has neither term, and both are needed
+        # because it ends in a product of two MLP heads: at init both factors are near zero, so
+        # the whole batch's logits span ~6e-4 (every probability lands in 0.5000-0.5008).
+        #
+        #   `bias`  starts at the training split's prior logit, so the model does not spend its
+        #           first ~10 epochs discovering the class balance through a multiplicative
+        #           bottleneck (observed: f1 exactly 0.00 for 8 epochs).
+        #   `scale` multiplies the gradient flowing back into both branches. Measured, the
+        #           gradient reaching the GGNN trunk through this head is ~53x weaker than through
+        #           a linear head on the same pooled features, so `logit_scale_init` > 1 buys that
+        #           magnitude back. Left at 1.0 by default -- a free hyperparameter, not a paper
+        #           value.
+        #
+        # Set `conv.logit_affine: false` to recover the paper's exact readout.
+        self.logit_affine = bool(conv_cfg.get("logit_affine", True))
+        if self.logit_affine:
+            self.scale = nn.Parameter(
+                torch.tensor([float(conv_cfg.get("logit_scale_init", 1.0))]))
+            self.bias = nn.Parameter(torch.tensor([prior_logit(pos_rate)]))
 
     def forward(self, H: torch.Tensor, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """H [B, M, z], x [B, M, d], mask [B, M] -> logits [B] (pre-sigmoid)."""
@@ -202,8 +261,20 @@ class ConvModule(nn.Module):
             mask = F.pad(mask, (0, pad), value=False)
 
         zx_in = torch.cat([H, x], dim=-1)                 # [B, M, z+d]
-        Z = self.branch_zx(zx_in, mask)
-        Y = self.branch_y(H, mask)
+        Z, z_mask = self.branch_zx(zx_in, mask)
+        Y, _ = self.branch_y(H, mask)
+
+        if self.readout == "avg_nodes":
+            # [B, C, M'] -> [B, M', C] so the heads act per node position.
+            z_out = self.mlp_zx(self.dropout(Z.transpose(1, 2)))   # [B, M', MLP_OUT]
+            y_out = self.mlp_y(self.dropout(Y.transpose(1, 2)))    # [B, M', MLP_OUT]
+            prod = z_out * y_out                                   # Eq. 9's elementwise product
+            # AVG over REAL positions only. Padded positions carry a nonzero head output (the
+            # Linear biases fire on a zero input), so they must be excluded explicitly here --
+            # unlike the max readout, where post-ReLU zeros can never win.
+            keep = z_mask.transpose(1, 2)                          # [B, M', 1]
+            denom = keep.sum(dim=(1, 2)).clamp(min=1.0) * prod.shape[-1]
+            return self._affine((prod * keep).sum(dim=(1, 2)) / denom)
 
         if self.branch_zx.axis == "nodes":
             # [B, C, M'] -> max over the (pooled) node axis: "did any window fire this filter".
@@ -214,11 +285,11 @@ class ConvModule(nn.Module):
         else:
             Z = _masked_node_maxpool(Z, mask)             # [B, C, W'_zx]
             Y = _masked_node_maxpool(Y, mask)             # [B, C, W'_y]
-        Z = self.dropout(Z)
-        Y = self.dropout(Y)
 
-        z_out = self.mlp_zx(Z)   # [B, MLP_OUT]
-        y_out = self.mlp_y(Y)    # [B, MLP_OUT]
-        prod = z_out * y_out     # elementwise multiply (Eq. 9)
-        logits = prod.mean(dim=-1)  # AVG aggregation -> [B]
-        return logits
+        z_out = self.mlp_zx(self.dropout(Z))   # [B, MLP_OUT]
+        y_out = self.mlp_y(self.dropout(Y))    # [B, MLP_OUT]
+        prod = z_out * y_out                   # elementwise multiply (Eq. 9)
+        return self._affine(prod.mean(dim=-1))  # AVG aggregation -> [B]
+
+    def _affine(self, logits: torch.Tensor) -> torch.Tensor:
+        return self.scale * logits + self.bias if self.logit_affine else logits

@@ -114,6 +114,17 @@ class DevignDataset(Dataset):
         return cls(d["samples"], d["type_vocab_size"], edge_types=d["edge_types"])
 
 
+def positive_rate(ds: DevignDataset) -> float | None:
+    """Fraction of positives in a split (None if empty).
+
+    Used to initialise the readout bias: Eq. 9's product head emits logits within ~1e-3 of zero at
+    init, so without the prior baked in the model burns its first several epochs discovering the
+    class balance through a multiplicative bottleneck. qemu is 42.6% positive, ffmpeg 51.0%.
+    """
+    labels = [int(s.label) for s in ds.samples]
+    return (sum(labels) / len(labels)) if labels else None
+
+
 @dataclass
 class GraphBatch:
     code_feat: torch.Tensor    # [B, M, code_dim]

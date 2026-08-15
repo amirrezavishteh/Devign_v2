@@ -218,9 +218,11 @@ def prepare(config: dict, verbose: bool = True):
     if verbose:
         print(f"[prepare] type vocab: {len(type_vocab)} types")
 
-    featurizer = NodeFeaturizer(w2v, type_vocab,
-                                internal_code=emb_cfg.get("internal_code", "zero"))
-    featurizer.save(os.path.join(proc_dir, "featurizer"))
+    featurizer = NodeFeaturizer(
+        w2v, type_vocab,
+        internal_code=emb_cfg.get("internal_code", "mean_standardized"),
+        oov_code=emb_cfg.get("oov_code", "random"),
+        seed=config["project"]["seed"])
 
     # 5. Split (75/12.5/12.5 by default; data.paper_split restores the paper's exact 75/25).
     train_funcs, val_funcs, test_funcs = split_functions(
@@ -229,6 +231,16 @@ def prepare(config: dict, verbose: bool = True):
         mode = data_cfg.get("split_by", "random")
         print(f"[prepare] split ({mode}): {len(train_funcs)} train / {len(val_funcs)} val / "
               f"{len(test_funcs)} test")
+
+    # 5b. Fit code-feature standardization on the TRAINING graphs only, then persist the
+    #     featurizer. This has to happen after the split (val/test statistics must not leak in)
+    #     and before featurization, which consumes the fitted stats.
+    featurizer.fit_standardizer(graph_by_id[id(fn)] for fn in train_funcs)
+    if verbose and featurizer.code_mean is not None:
+        print(f"[prepare] code features standardized on {len(train_funcs)} train graphs "
+              f"(mean |mu| {np.abs(featurizer.code_mean).mean():.3f}, "
+              f"mean sigma {featurizer.code_std.mean():.3f})")
+    featurizer.save(os.path.join(proc_dir, "featurizer"))
 
     # 6. Featurize the graphs we already built -- no re-parsing.
     def _samples_for(funcs):

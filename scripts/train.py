@@ -15,7 +15,8 @@ import os
 import torch
 from torch.utils.data import DataLoader
 
-from data.dataset import BucketBySizeSampler, DevignDataset, make_collate_fn
+from data.dataset import (BucketBySizeSampler, DevignDataset, make_collate_fn,
+                          positive_rate)
 from data.graph_builder import EDGE_TYPES
 from models.devign import build_model
 from training.trainer import evaluate, make_train_config, train_model
@@ -108,7 +109,8 @@ def train_graph_model(cfg, model_name: str, device, epochs=None, project: str | 
 
     model = build_model(
         model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
-        type_vocab_size=train_ds.type_vocab_size, num_edge_types=len(EDGE_TYPES))
+        type_vocab_size=train_ds.type_vocab_size, num_edge_types=len(EDGE_TYPES),
+        pos_rate=positive_rate(train_ds))
 
     # Checkpoint beside the model so an interrupted run resumes at the last completed epoch.
     tcfg = make_train_config(

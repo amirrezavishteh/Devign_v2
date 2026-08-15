@@ -100,46 +100,79 @@ def test_featurizer_dims():
     assert types.dtype == np.int64
 
 
-def test_internal_nodes_carry_type_only_by_default():
-    """Leaves keep lexical content; internal nodes must not be pre-loaded with subtree means.
-
-    Mean-pooling made root vectors from different functions 0.834-cosine-similar on real data,
-    i.e. the upper AST carried almost no discriminative signal. Aggregation is the GGNN's job.
-    """
-    g = build_graph(_EXAMPLE)
-    corpus = build_corpus([g])
-    w2v = train_word2vec(corpus, dim=16, epochs=2, min_count=1)
-    tv = TypeVocab()
-    for n in g.nodes:
-        tv.add(n.type)
-
-    code, types = NodeFeaturizer(w2v, tv).featurize_graph(g)
-    is_leaf = np.array([n.is_leaf for n in g.nodes])
-    assert np.allclose(code[~is_leaf], 0.0), "internal nodes should carry no code vector"
-    assert np.abs(code[is_leaf]).sum() > 0, "leaf nodes lost their token vectors"
-    # Type still identifies every node, including internal ones.
-    assert types.shape == (g.num_nodes,)
-    assert len(set(types[~is_leaf].tolist())) > 1
-
-    # The legacy behaviour remains available for comparison.
-    mean_code, _ = NodeFeaturizer(w2v, tv, internal_code="mean").featurize_graph(g)
-    assert np.abs(mean_code[~is_leaf]).sum() > 0
-
-
-def test_featurizer_roundtrips_internal_code_mode(tmp_path):
-    """Inference must featurize exactly as training did, or it scores a different function."""
+def _tiny_featurizer_inputs():
     g = build_graph(_EXAMPLE)
     w2v = train_word2vec(build_corpus([g]), dim=16, epochs=2, min_count=1)
     tv = TypeVocab()
     for n in g.nodes:
         tv.add(n.type)
+    return g, w2v, tv
 
+
+def test_every_node_carries_lexical_content_by_default():
+    """The default must not leave half the graph blank.
+
+    Measured on the real corpus, `internal_code: zero` gives 49.6% of all nodes an all-zero code
+    half (43.8% internal + 8% of leaf-token occurrences below min_count), while time_steps 6 is
+    well under the median AST depth of 11 -- so the upper AST never receives a token vector by
+    message passing either. `mean_standardized` keeps the content and removes the flatness that
+    made plain `mean` useless.
+    """
+    g, w2v, tv = _tiny_featurizer_inputs()
+    feat = NodeFeaturizer(w2v, tv)
+    assert feat.internal_code == "mean_standardized"
+    feat.fit_standardizer([g])
+
+    code, types = feat.featurize_graph(g)
+    is_leaf = np.array([n.is_leaf for n in g.nodes])
+    assert np.abs(code[~is_leaf]).sum() > 0, "internal nodes lost their code vectors"
+    assert np.abs(code[is_leaf]).sum() > 0, "leaf nodes lost their token vectors"
+    # Standardization must actually centre the corpus it was fitted on.
+    assert np.abs(code.mean(axis=0)).max() < 1e-4
+    # Type still identifies every node, including internal ones.
+    assert types.shape == (g.num_nodes,)
+    assert len(set(types[~is_leaf].tolist())) > 1
+
+    # Both earlier behaviours remain available for comparison.
+    zero_code, _ = NodeFeaturizer(w2v, tv, internal_code="zero").featurize_graph(g)
+    assert np.allclose(zero_code[~is_leaf], 0.0)
+    mean_code, _ = NodeFeaturizer(w2v, tv, internal_code="mean").featurize_graph(g)
+    assert np.abs(mean_code[~is_leaf]).sum() > 0
+
+
+def test_oov_leaves_are_distinct_from_internal_nodes():
+    """Zero is not a neutral value: under `internal_code: zero` it is also what every internal
+    node gets, so a rare identifier and an internal AST node would be the same point."""
+    g, w2v, tv = _tiny_featurizer_inputs()
+    feat = NodeFeaturizer(w2v, tv, internal_code="zero", oov_code="random")
+    assert np.abs(feat.leaf_vector("a_token_that_is_not_in_the_vocabulary")).sum() > 0
+
+    zero_feat = NodeFeaturizer(w2v, tv, internal_code="zero", oov_code="zero")
+    assert np.allclose(zero_feat.leaf_vector("a_token_that_is_not_in_the_vocabulary"), 0.0)
+
+
+def test_featurizer_roundtrips_featurization_settings(tmp_path):
+    """Inference must featurize exactly as training did, or it scores a different function --
+    including the fitted standardization statistics and the OOV vector."""
+    g, w2v, tv = _tiny_featurizer_inputs()
     out = str(tmp_path / "featurizer")
-    NodeFeaturizer(w2v, tv, internal_code="mean").save(out)
-    assert NodeFeaturizer.load(out).internal_code == "mean"
 
-    NodeFeaturizer(w2v, tv, internal_code="zero").save(out)
-    assert NodeFeaturizer.load(out).internal_code == "zero"
+    for mode in ("mean", "zero"):
+        NodeFeaturizer(w2v, tv, internal_code=mode).save(out)
+        assert NodeFeaturizer.load(out).internal_code == mode
+
+    fitted = NodeFeaturizer(w2v, tv, internal_code="mean_standardized", oov_code="random")
+    fitted.fit_standardizer([g])
+    fitted.save(out)
+
+    loaded = NodeFeaturizer.load(out)
+    assert loaded.internal_code == "mean_standardized"
+    assert loaded.oov_code == "random"
+    assert np.allclose(loaded.code_mean, fitted.code_mean)
+    assert np.allclose(loaded.code_std, fitted.code_std)
+    assert np.allclose(loaded.oov_vector, fitted.oov_vector)
+    # The whole point: a reloaded featurizer produces byte-identical features.
+    assert np.allclose(loaded.featurize_graph(g)[0], fitted.featurize_graph(g)[0])
 
 
 def test_model_forward_and_backward():
