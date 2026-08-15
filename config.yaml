@@ -95,6 +95,14 @@ model:
   time_steps: 6             # T
   aggregation: sum          # one of {mean, max, sum, concat}; paper uses SUM
   conv:
+    # Which axis the "1-D convolution" (Sec 2.4) slides along.
+    #   nodes    -- along the node sequence, with the node feature vector as input channels. The
+    #               node axis is the only one with meaningful order (AST pre-order / natural code
+    #               sequence), so a width-3 kernel sees three consecutive code elements.
+    #   features -- along the node embedding's feature axis. Almost certainly wrong: word2vec
+    #               dimensions are unordered, so convolving across them shares weights between
+    #               unrelated dimensions. Kept only for comparison.
+    conv_axis: nodes
     conv1_filter: [1, 3]
     pool1_filter: [1, 3]
     pool1_stride: [1, 2]

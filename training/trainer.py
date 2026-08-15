@@ -6,6 +6,7 @@ regularization via weight_decay, and early stopping with patience=100 epochs on 
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -41,6 +42,13 @@ class TrainConfig:
     # accumulate gradients until `batch_size` graphs have been seen before stepping, so the
     # effective batch size stays the paper's 128 no matter how the micro-batches fall out.
     accumulate_to_batch_size: bool = True
+    # Per-epoch checkpoint. Set by the training entry points so that a crash (shared-GPU fault,
+    # preemption, OOM) costs minutes rather than the whole model: re-running resumes from the
+    # last completed epoch instead of epoch 1. None disables checkpointing.
+    checkpoint_path: str | None = None
+    # Skip a micro-batch that OOMs rather than aborting the run. The node-budget sampler bounds
+    # memory, but a co-tenant grabbing VRAM mid-run can still push a single batch over.
+    skip_oom_batches: bool = True
 
 
 def make_train_config(cfg: dict, device: str, train_labels=None, epochs: int | None = None,
@@ -118,8 +126,34 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
     best_state = copy.deepcopy(model.state_dict())
     best_metrics = None
     epochs_no_improve = 0
+    start_epoch = 1
 
-    for epoch in range(1, cfg.epochs + 1):
+    # Resume a run interrupted by a GPU fault / preemption / OOM.
+    if cfg.checkpoint_path and os.path.exists(cfg.checkpoint_path):
+        ckpt = torch.load(cfg.checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        best_state = ckpt["best_state"]
+        best_score = ckpt["best_score"]
+        best_metrics = ckpt["best_metrics"]
+        epochs_no_improve = ckpt["epochs_no_improve"]
+        start_epoch = ckpt["epoch"] + 1
+        if verbose:
+            print(f"  resumed from {cfg.checkpoint_path} at epoch {start_epoch} "
+                  f"(best {cfg.monitor} {best_score:.2f})")
+
+    def _save_checkpoint(epoch: int) -> None:
+        if not cfg.checkpoint_path:
+            return
+        os.makedirs(os.path.dirname(cfg.checkpoint_path) or ".", exist_ok=True)
+        tmp = cfg.checkpoint_path + ".tmp"
+        torch.save({"epoch": epoch, "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(), "best_state": best_state,
+                    "best_score": best_score, "best_metrics": best_metrics,
+                    "epochs_no_improve": epochs_no_improve}, tmp)
+        os.replace(tmp, cfg.checkpoint_path)   # atomic: a crash mid-write can't corrupt it
+
+    for epoch in range(start_epoch, cfg.epochs + 1):
         model.train()
         total_loss = 0.0
         n_batches = 0
@@ -143,9 +177,20 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         for batch in train_loader:
             batch = _move_batch(batch, device)
             labels = _labels_of(batch).to(device)
-            logits = model(batch)
-            loss = criterion(logits, labels)
-            loss.backward()
+            try:
+                logits = model(batch)
+                loss = criterion(logits, labels)
+                loss.backward()
+            except torch.cuda.OutOfMemoryError:
+                if not cfg.skip_oom_batches:
+                    raise
+                # A co-tenant can grab VRAM mid-run; drop this micro-batch rather than lose
+                # the whole training run. Accumulated grads stay valid for the next step.
+                optimizer.zero_grad(set_to_none=True)
+                pending = 0
+                torch.cuda.empty_cache()
+                print("  [warn] skipped a micro-batch after CUDA OOM (freeing cache)")
+                continue
 
             bs = labels.shape[0]
             total_loss += loss.item() / bs if cfg.accumulate_to_batch_size else loss.item()
@@ -177,12 +222,21 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
                   f"| val acc {val_metrics['accuracy']:.2f} f1 {val_metrics['f1']:.2f} "
                   f"| best {cfg.monitor} {best_score:.2f}")
 
+        _save_checkpoint(epoch)
+
         if epochs_no_improve >= cfg.patience:
             if verbose:
                 print(f"  early stopping at epoch {epoch} (no improvement for {cfg.patience})")
             break
 
     model.load_state_dict(best_state)
+    # Training completed normally; drop the resume checkpoint so a later re-run retrains cleanly
+    # rather than resuming a finished model.
+    if cfg.checkpoint_path and os.path.exists(cfg.checkpoint_path):
+        try:
+            os.remove(cfg.checkpoint_path)
+        except OSError:
+            pass
 
     # Pick the operating point on validation using the restored (best) weights, then report at it.
     # Done after restoration so the threshold belongs to the checkpoint we actually ship.

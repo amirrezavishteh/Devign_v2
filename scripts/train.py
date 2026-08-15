@@ -110,7 +110,10 @@ def train_graph_model(cfg, model_name: str, device, epochs=None, project: str | 
         model_name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
         type_vocab_size=train_ds.type_vocab_size, num_edge_types=len(EDGE_TYPES))
 
-    tcfg = make_train_config(cfg, device, [s.label for s in train_ds.samples], epochs)
+    # Checkpoint beside the model so an interrupted run resumes at the last completed epoch.
+    tcfg = make_train_config(
+        cfg, device, [s.label for s in train_ds.samples], epochs,
+        checkpoint_path=os.path.join(artifact_dir(cfg, model_name, project), "checkpoint.pt"))
     model, best = train_model(model, train_loader, val_loader, tcfg, verbose=verbose)
 
     # Apply the validation-tuned operating point to the held-out test split -- the threshold is a

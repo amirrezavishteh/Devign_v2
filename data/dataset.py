@@ -230,6 +230,22 @@ def make_collate_fn(edge_types: list[str], add_self_loops: bool = False,
             deg.index_add_(0, flat, torch.ones(flat.numel(), dtype=torch.float32))
             edge_norm = 1.0 / deg[flat].clamp(min=1.0)
 
+        # Bounds check on the CPU. An out-of-range index here would become an illegal memory
+        # access inside index_add_/index_put_ on the GPU, which CUDA reports asynchronously as
+        # "unspecified launch failure" at some unrelated later line -- killing a multi-hour run
+        # with a traceback that points nowhere near the cause. Cost is one max() per batch.
+        if edge_index.numel():
+            n_slots = B * M
+            hi = int(edge_index.max())
+            lo = int(edge_index.min())
+            if lo < 0 or hi >= n_slots:
+                raise ValueError(
+                    f"edge_index out of range: [{lo}, {hi}] outside [0, {n_slots}) "
+                    f"(B={B}, M={M}). A graph's edges reference a node id >= its num_nodes.")
+            t_hi = int(edge_type.max())
+            if t_hi >= k or int(edge_type.min()) < 0:
+                raise ValueError(f"edge_type out of range: max {t_hi} for {k} edge types")
+
         adj = None
         if not sparse:
             adj = torch.zeros(B, k, M, M, dtype=torch.float32)

@@ -65,29 +65,52 @@ def _neg_inf_pad(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
 
 class _SigmaStack(nn.Module):
-    """Two CONV->ReLU->MAXPOOL layers (Eq. 6/7) over a [B, 1, M, W] map.
+    """Two CONV->ReLU->MAXPOOL layers (Eq. 6/7).
 
-    Filters come from config (`model.conv.*`), defaulting to the paper's Sec 3.3 values.
+    Two orientations are supported, selected by `model.conv.conv_axis`:
+
+    ``"nodes"`` (default)
+        A genuine **1-D convolution over the node sequence**, with the node's feature vector as
+        input channels: `Conv1d(W -> C, kernel 3)` sliding along nodes, then max-pooling along
+        nodes. This reads the paper's "1-D convolutional layers" (Sec 2.4) as sliding over the
+        code, which is the only axis with meaningful order (AST pre-order / natural code
+        sequence), so a width-3 kernel sees three consecutive code elements.
+
+    ``"features"``
+        The original orientation: a (1,3) kernel sliding along the **feature** axis of the node
+        embedding. This is almost certainly wrong -- word2vec dimensions are unordered, so
+        dimensions 5 and 6 are no more related than 5 and 87, and weight-sharing across them is
+        strictly worse than a dense layer. Kept only so the two can be compared.
     """
 
     def __init__(self, conv_channels: int, in_width: int, conv_cfg: dict):
         super().__init__()
+        self.axis = str(conv_cfg.get("conv_axis", "nodes")).lower()
         c1 = _pair(conv_cfg, "conv1_filter")
         p1, p1s = _pair(conv_cfg, "pool1_filter"), _pair(conv_cfg, "pool1_stride")
         c2 = _pair(conv_cfg, "conv2_filter")
         p2, p2s = _pair(conv_cfg, "pool2_filter"), _pair(conv_cfg, "pool2_stride")
-
-        # Pad only the feature axis, so the node axis is never inflated with synthetic rows.
-        self.conv1 = nn.Conv2d(1, conv_channels, kernel_size=c1, padding=(0, c1[1] // 2))
-        self.pool1 = nn.MaxPool2d(kernel_size=p1, stride=p1s, ceil_mode=True)
-        self.conv2 = nn.Conv2d(conv_channels, conv_channels, kernel_size=c2,
-                               padding=(0, c2[1] // 2))
-        self.pool2 = nn.MaxPool2d(kernel_size=p2, stride=p2s, ceil_mode=True)
-
-        self.pool2_height = p2[0]
-        self.pool2_stride_h = p2s[0]
         self.conv_channels = conv_channels
-        self.out_width = self._infer_out_width(in_width)
+
+        if self.axis == "nodes":
+            # Widths of the paper's filters become kernel sizes along the node axis.
+            self.conv1 = nn.Conv1d(in_width, conv_channels, kernel_size=c1[1],
+                                   padding=c1[1] // 2)
+            self.pool1 = nn.MaxPool1d(kernel_size=p1[1], stride=p1s[1], ceil_mode=True)
+            self.conv2 = nn.Conv1d(conv_channels, conv_channels, kernel_size=c2[1],
+                                   padding=c2[1] // 2)
+            self.pool2 = nn.MaxPool1d(kernel_size=p2[1], stride=p2s[1], ceil_mode=True)
+            self.out_width = conv_channels
+        else:
+            # Pad only the feature axis, so the node axis is never inflated with synthetic rows.
+            self.conv1 = nn.Conv2d(1, conv_channels, kernel_size=c1, padding=(0, c1[1] // 2))
+            self.pool1 = nn.MaxPool2d(kernel_size=p1, stride=p1s, ceil_mode=True)
+            self.conv2 = nn.Conv2d(conv_channels, conv_channels, kernel_size=c2,
+                                   padding=(0, c2[1] // 2))
+            self.pool2 = nn.MaxPool2d(kernel_size=p2, stride=p2s, ceil_mode=True)
+            self.pool2_height = p2[0]
+            self.pool2_stride_h = p2s[0]
+            self.out_width = self._infer_out_width(in_width)
 
     def _infer_out_width(self, in_width: int) -> int:
         with torch.no_grad():
@@ -97,12 +120,38 @@ class _SigmaStack(nn.Module):
             out = self.pool2(F.relu(self.conv2(self.pool1(F.relu(self.conv1(dummy))))))
         return out.shape[-1]
 
-    def node_out_height(self, m: int) -> int:
-        """Rows remaining on the node axis after pool2, for a map of `m` input rows."""
-        import math
-        return max(1, math.ceil((m - self.pool2_height) / self.pool2_stride_h) + 1)
+    @property
+    def min_nodes(self) -> int:
+        """Smallest node count this stack can consume without a zero-size dimension."""
+        return 4 if self.axis == "nodes" else max(2, getattr(self, "pool2_height", 1))
+
+    @property
+    def readout_dim(self) -> int:
+        """Flat width the MLP sees after the node axis is collapsed by the max-pool."""
+        # nodes: [B, C, M'] --max over M'--> [B, C]
+        # features: [B, C, H, W'] --masked max over H--> [B, C, W'] --flatten--> C*W'
+        return self.conv_channels if self.axis == "nodes" else self.conv_channels * self.out_width
 
     def forward(self, feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if self.axis == "nodes":
+            # [B, M, W] -> [B, W, M]: features are channels, the node sequence is the signal.
+            x = feat.transpose(1, 2)
+            m = mask.unsqueeze(1).to(x.dtype)             # [B, 1, M]
+            x = x * m
+
+            # Re-zero padded positions after every conv. Convolution bias makes an all-padding
+            # window produce a non-zero activation, and a window centred on the first pad node
+            # still sees a real neighbour -- so without this a graph's logit would depend on how
+            # long its batch-mates are. Everything here is post-ReLU and therefore non-negative,
+            # so zeroing a position is exactly equivalent to excluding it from the max-pool.
+            x = F.relu(self.conv1(x)) * m                 # conv1 padding keeps length == M
+            x = self.pool1(x)
+            m = (self.pool1(m) > 0).to(x.dtype)           # validity at the pooled resolution
+            x = F.relu(self.conv2(x)) * m                 # conv2 kernel 1 keeps length
+            x = self.pool2(x)
+            m = (self.pool2(m) > 0).to(x.dtype)
+            return x * m                                  # [B, C, M'], pads exactly 0
+
         x = feat.unsqueeze(1)                    # [B, 1, M, W]
         x = self.pool1(F.relu(self.conv1(x)))    # height untouched (kernel/stride 1)
         x = F.relu(self.conv2(x))
@@ -135,8 +184,8 @@ class ConvModule(nn.Module):
         self.branch_y = _SigmaStack(ch, y_width, conv_cfg)
         self.dropout = nn.Dropout(dropout)
 
-        flat_zx = ch * self.branch_zx.out_width
-        flat_y = ch * self.branch_y.out_width
+        flat_zx = self.branch_zx.readout_dim
+        flat_y = self.branch_y.readout_dim
         self.mlp_zx = nn.Sequential(
             nn.Flatten(), nn.Linear(flat_zx, mlp_hidden), nn.ReLU(), nn.Linear(mlp_hidden, MLP_OUT))
         self.mlp_y = nn.Sequential(
@@ -144,19 +193,27 @@ class ConvModule(nn.Module):
 
     def forward(self, H: torch.Tensor, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """H [B, M, z], x [B, M, d], mask [B, M] -> logits [B] (pre-sigmoid)."""
-        # pool2 has a height-2 kernel, so a 1-node graph has no adjacent node to pool with.
-        if H.shape[1] < self.branch_zx.pool2_height:
-            pad = self.branch_zx.pool2_height - H.shape[1]
+        # Graphs shorter than the stack's kernels have no window to convolve over.
+        need = self.branch_zx.min_nodes
+        if H.shape[1] < need:
+            pad = need - H.shape[1]
             H = F.pad(H, (0, 0, 0, pad))
             x = F.pad(x, (0, 0, 0, pad))
             mask = F.pad(mask, (0, pad), value=False)
 
         zx_in = torch.cat([H, x], dim=-1)                 # [B, M, z+d]
-        Z = self.branch_zx(zx_in, mask)                   # [B, C, H_out, W'_zx]
-        Y = self.branch_y(H, mask)                        # [B, C, H_out, W'_y]
+        Z = self.branch_zx(zx_in, mask)
+        Y = self.branch_y(H, mask)
 
-        Z = _masked_node_maxpool(Z, mask)                 # [B, C, W'_zx]
-        Y = _masked_node_maxpool(Y, mask)                 # [B, C, W'_y]
+        if self.branch_zx.axis == "nodes":
+            # [B, C, M'] -> max over the (pooled) node axis: "did any window fire this filter".
+            # Padded positions are exactly 0 and every activation is post-ReLU (>= 0), so they
+            # can only win when no real window fired at all -- which is the correct answer.
+            Z = Z.max(dim=2).values
+            Y = Y.max(dim=2).values
+        else:
+            Z = _masked_node_maxpool(Z, mask)             # [B, C, W'_zx]
+            Y = _masked_node_maxpool(Y, mask)             # [B, C, W'_y]
         Z = self.dropout(Z)
         Y = self.dropout(Y)
 
