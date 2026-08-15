@@ -100,6 +100,48 @@ def test_featurizer_dims():
     assert types.dtype == np.int64
 
 
+def test_internal_nodes_carry_type_only_by_default():
+    """Leaves keep lexical content; internal nodes must not be pre-loaded with subtree means.
+
+    Mean-pooling made root vectors from different functions 0.834-cosine-similar on real data,
+    i.e. the upper AST carried almost no discriminative signal. Aggregation is the GGNN's job.
+    """
+    g = build_graph(_EXAMPLE)
+    corpus = build_corpus([g])
+    w2v = train_word2vec(corpus, dim=16, epochs=2, min_count=1)
+    tv = TypeVocab()
+    for n in g.nodes:
+        tv.add(n.type)
+
+    code, types = NodeFeaturizer(w2v, tv).featurize_graph(g)
+    is_leaf = np.array([n.is_leaf for n in g.nodes])
+    assert np.allclose(code[~is_leaf], 0.0), "internal nodes should carry no code vector"
+    assert np.abs(code[is_leaf]).sum() > 0, "leaf nodes lost their token vectors"
+    # Type still identifies every node, including internal ones.
+    assert types.shape == (g.num_nodes,)
+    assert len(set(types[~is_leaf].tolist())) > 1
+
+    # The legacy behaviour remains available for comparison.
+    mean_code, _ = NodeFeaturizer(w2v, tv, internal_code="mean").featurize_graph(g)
+    assert np.abs(mean_code[~is_leaf]).sum() > 0
+
+
+def test_featurizer_roundtrips_internal_code_mode(tmp_path):
+    """Inference must featurize exactly as training did, or it scores a different function."""
+    g = build_graph(_EXAMPLE)
+    w2v = train_word2vec(build_corpus([g]), dim=16, epochs=2, min_count=1)
+    tv = TypeVocab()
+    for n in g.nodes:
+        tv.add(n.type)
+
+    out = str(tmp_path / "featurizer")
+    NodeFeaturizer(w2v, tv, internal_code="mean").save(out)
+    assert NodeFeaturizer.load(out).internal_code == "mean"
+
+    NodeFeaturizer(w2v, tv, internal_code="zero").save(out)
+    assert NodeFeaturizer.load(out).internal_code == "zero"
+
+
 def test_model_forward_and_backward():
     cfg = load_config("config.yaml")
     g = build_graph(_EXAMPLE)

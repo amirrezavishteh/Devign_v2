@@ -218,7 +218,8 @@ def prepare(config: dict, verbose: bool = True):
     if verbose:
         print(f"[prepare] type vocab: {len(type_vocab)} types")
 
-    featurizer = NodeFeaturizer(w2v, type_vocab)
+    featurizer = NodeFeaturizer(w2v, type_vocab,
+                                internal_code=emb_cfg.get("internal_code", "zero"))
     featurizer.save(os.path.join(proc_dir, "featurizer"))
 
     # 5. Split (75/12.5/12.5 by default; data.paper_split restores the paper's exact 75/25).

@@ -83,12 +83,32 @@ class TypeVocab:
 
 
 class NodeFeaturizer:
-    """Wraps a trained word2vec model + type vocabulary to produce x_v for every node."""
+    """Wraps a trained word2vec model + type vocabulary to produce x_v for every node.
 
-    def __init__(self, w2v: Word2Vec, type_vocab: TypeVocab):
+    `internal_code` controls how non-leaf nodes get their Code feature:
+
+    ``"zero"`` (default)
+        Leaves carry their token vector; internal nodes carry only their Type embedding, with a
+        zero code vector. The GGNN then aggregates lexical information up the AST via the
+        AST/REV_AST edges -- learnably, which is what those edge types are for.
+
+    ``"mean"``
+        The original behaviour: each internal node is pre-loaded with the mean word2vec vector of
+        every leaf token in its subtree. Measured on real FFmpeg/QEMU functions this washes the
+        signal out: **root-node vectors from different functions had cosine similarity 0.834**,
+        and internal-node variance was only 0.756x leaf variance, across the 44.7% of nodes that
+        are internal. Averaging hundreds of token vectors converges toward the corpus mean, so the
+        upper AST -- most of what the Conv module's max-pool sees -- became near-constant.
+        Retained for comparison, not recommended.
+    """
+
+    def __init__(self, w2v: Word2Vec, type_vocab: TypeVocab, internal_code: str = "zero"):
+        if internal_code not in {"zero", "mean"}:
+            raise ValueError(f"internal_code must be 'zero' or 'mean', got {internal_code!r}")
         self.w2v = w2v
         self.type_vocab = type_vocab
         self.code_dim = w2v.vector_size
+        self.internal_code = internal_code
 
     def code_vector(self, nodes: list[ASTNode], node_id: int) -> np.ndarray:
         tokens = collect_leaf_tokens(nodes, node_id)
@@ -101,15 +121,30 @@ class NodeFeaturizer:
         return self.type_vocab.get(node.type)
 
     def featurize_graph(self, graph: CodeGraph) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (code_matrix [m, code_dim] float32, type_ids [m] int64).
+        """Returns (code_matrix [m, code_dim] float32, type_ids [m] int64)."""
+        nodes = graph.nodes
+        type_ids = np.array([self.type_id(n) for n in nodes], dtype=np.int64)
 
-        Code vectors are the mean of word2vec vectors over each node's spanned leaf tokens.
+        if self.internal_code == "zero":
+            # Only leaves carry lexical content; internal nodes are identified by Type alone and
+            # receive leaf information through GGNN message passing rather than pre-averaging.
+            code_mat = np.zeros((len(nodes), self.code_dim), dtype=np.float32)
+            wv = self.w2v.wv
+            for nid, node in enumerate(nodes):
+                if node.is_leaf and node.code in wv:
+                    code_mat[nid] = wv[node.code]
+            return code_mat, type_ids
+
+        return self._featurize_mean(nodes), type_ids
+
+    def _featurize_mean(self, nodes: list[ASTNode]) -> np.ndarray:
+        """Legacy subtree mean-pooling.
+
         Computed bottom-up in a single O(m) pass instead of per-node leaf collection (which would
         be O(m) per node, i.e. O(m^2) per graph): since `nodes` is pre-order DFS, every child id is
         strictly greater than its parent's, so iterating ids in reverse processes every child
         before its parent, letting each node simply sum its direct children's (sum, count).
         """
-        nodes = graph.nodes
         m = len(nodes)
         sums = np.zeros((m, self.code_dim), dtype=np.float32)
         counts = np.zeros(m, dtype=np.int64)
@@ -127,16 +162,23 @@ class NodeFeaturizer:
         safe_counts = np.maximum(counts, 1).reshape(-1, 1)
         code_mat = (sums / safe_counts).astype(np.float32)
         code_mat[counts == 0] = 0.0
-        type_ids = np.array([self.type_id(n) for n in nodes], dtype=np.int64)
-        return code_mat, type_ids
+        return code_mat
 
     def save(self, out_dir: str) -> None:
         os.makedirs(out_dir, exist_ok=True)
         self.w2v.save(os.path.join(out_dir, "word2vec.model"))
         self.type_vocab.save(os.path.join(out_dir, "type_vocab.json"))
+        # Persisted so inference featurizes exactly the way training did.
+        with open(os.path.join(out_dir, "featurizer.json"), "w", encoding="utf-8") as f:
+            json.dump({"internal_code": self.internal_code}, f)
 
     @classmethod
     def load(cls, out_dir: str) -> "NodeFeaturizer":
         w2v = Word2Vec.load(os.path.join(out_dir, "word2vec.model"))
         type_vocab = TypeVocab.load(os.path.join(out_dir, "type_vocab.json"))
-        return cls(w2v, type_vocab)
+        meta_path = os.path.join(out_dir, "featurizer.json")
+        internal_code = "mean"  # featurizers saved before this option existed used mean-pooling
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                internal_code = json.load(f).get("internal_code", "mean")
+        return cls(w2v, type_vocab, internal_code=internal_code)

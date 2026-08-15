@@ -70,6 +70,15 @@ dataset:
   max_nodes_per_batch: 12000
 
 embedding:
+  # How non-leaf AST nodes get their Code feature.
+  #   zero -- leaves carry their token vector; internal nodes carry Type only, and the GGNN
+  #           aggregates lexical signal up the AST/REV_AST edges (what those edges are for).
+  #   mean -- pre-load each internal node with the mean word2vec vector of its subtree's leaves.
+  # Measured on real FFmpeg/QEMU data, `mean` washes the signal out: root-node vectors from
+  # DIFFERENT functions had cosine similarity 0.834 and internal-node variance was 0.756x leaf
+  # variance, across the 44.7% of nodes that are internal. The paper does not specify how internal
+  # Code is encoded (Fig. 2 only shows the source span), so this is an interpretation choice.
+  internal_code: zero
   word2vec_dim: 100
   type_dim: 100            # label-encoded node Type, embedded to this size -> concat with code = 200-d xv
   # min_count 1 produced a 98,021-token vocabulary from ~18k real functions: most tokens occur
