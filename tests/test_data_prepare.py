@@ -2,8 +2,11 @@
 replaced with the Devign authors' released dataset (see data/hf_devign.py, data/prepare.py)."""
 from __future__ import annotations
 
-from data.download import RawFunction, load_real
-from data.prepare import commit_disjoint_split, split_functions, stratified_split3
+import pytest
+
+from data.download import RawFunction, load_devign_parquet_dir, load_real
+from data.prepare import (codexglue_split, commit_disjoint_split, split_functions,
+                          stratified_split3)
 
 
 def _make_functions(n: int, commits_per: int = 3) -> list[RawFunction]:
@@ -82,3 +85,52 @@ def test_load_real_reads_commit_id():
         assert funcs[0].target == 1
     finally:
         os.unlink(path)
+
+
+# ----------------------------------------------------------------------------------------------
+# CodeXGLUE split preservation
+# ----------------------------------------------------------------------------------------------
+
+def _split_labelled(counts: dict[str, int]) -> list[RawFunction]:
+    out = []
+    for split, n in counts.items():
+        for i in range(n):
+            out.append(RawFunction(func=f"int {split}{i}(void){{return {i};}}", target=i % 2,
+                                   project="qemu", name=f"{split}{i}", split=split))
+    return out
+
+
+def test_codexglue_split_uses_the_released_partition():
+    """The release ships a split; `split_by: codexglue` must reproduce it exactly rather than
+    re-splitting, or the numbers stop being comparable to published results on this dataset."""
+    funcs = _split_labelled({"train": 40, "validation": 8, "test": 6})
+    train, val, test = codexglue_split(funcs, seed=1)
+    assert (len(train), len(val), len(test)) == (40, 8, 6)
+    assert {f.split for f in train} == {"train"}
+    assert {f.split for f in val} == {"validation"}
+    assert {f.split for f in test} == {"test"}
+
+
+def test_codexglue_split_refuses_unlabelled_data():
+    """Silently re-splitting when the labels are missing would produce numbers that LOOK like
+    leaderboard-comparable ones but are not."""
+    funcs = _split_labelled({"train": 10}) + _make_functions(5)
+    with pytest.raises(ValueError, match="codexglue"):
+        codexglue_split(funcs, seed=1)
+
+
+def test_split_functions_dispatches_to_codexglue():
+    funcs = _split_labelled({"train": 20, "validation": 4, "test": 4})
+    train, val, test = split_functions(funcs, {"split_by": "codexglue", "train_split": 0.75}, 1)
+    assert (len(train), len(val), len(test)) == (20, 4, 4)
+
+
+def test_unknown_split_by_is_rejected():
+    with pytest.raises(ValueError, match="split_by"):
+        split_functions(_make_functions(10), {"split_by": "typo", "train_split": 0.75}, 1)
+
+
+def test_parquet_dir_loader_requires_all_three_splits(tmp_path):
+    (tmp_path / "train-00000-of-00001.parquet").write_bytes(b"")
+    with pytest.raises(FileNotFoundError, match="validation"):
+        load_devign_parquet_dir(str(tmp_path))

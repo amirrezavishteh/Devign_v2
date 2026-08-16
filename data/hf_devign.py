@@ -17,17 +17,19 @@ from __future__ import annotations
 import os
 
 _REPO_ID = "google/code_x_glue_cc_defect_detection"
-_FILES = [
-    "data/train-00000-of-00001.parquet",
-    "data/validation-00000-of-00001.parquet",
-    "data/test-00000-of-00001.parquet",
-]
+# split name -> path within the HF repo. Same three files you get by downloading them by hand;
+# data.download.load_devign_parquet_dir reads exactly these from a local directory.
+_FILES = {
+    "train": "data/train-00000-of-00001.parquet",
+    "validation": "data/validation-00000-of-00001.parquet",
+    "test": "data/test-00000-of-00001.parquet",
+}
 
 # The release spells the projects 'FFmpeg' and 'qemu'; the repo uses lowercase keys throughout.
 _PROJECT_NORMALISE = {"ffmpeg": "ffmpeg", "qemu": "qemu"}
 
 
-def _normalise_project(raw: str) -> str:
+def normalise_project(raw: str) -> str:
     return _PROJECT_NORMALISE.get(str(raw).strip().lower(), str(raw).strip().lower())
 
 
@@ -48,7 +50,7 @@ def fetch_devign_release(cache_dir: str | None = None) -> list[dict]:
     import pyarrow.parquet as pq
 
     records: list[dict] = []
-    for rel in _FILES:
+    for split, rel in _FILES.items():
         path = hf_hub_download(repo_id=_REPO_ID, repo_type="dataset", filename=rel,
                                cache_dir=cache_dir)
         table = pq.read_table(path)
@@ -62,29 +64,17 @@ def fetch_devign_release(cache_dir: str | None = None) -> list[dict]:
                 "func": func,
                 # `target` is a bool in the parquet schema; the pipeline wants 0/1.
                 "target": int(bool(cols["target"][i])),
-                "project": _normalise_project(cols["project"][i]),
+                "project": normalise_project(cols["project"][i]),
                 "name": str(cols.get("id", [""] * n)[i]),
                 "cwe": "",
                 "commit_id": str(cols.get("commit_id", [""] * n)[i]),
+                # Preserved so `data.split_by: codexglue` can reproduce the published split.
+                # Discarded by the default random split, which is what Sec 3.3 does.
+                "split": split,
             })
-    return _dedupe(records)
-
-
-def _dedupe(records: list[dict]) -> list[dict]:
-    """Drop exact-duplicate function bodies.
-
-    The release contains a small number of byte-identical functions (the same helper touched by
-    several commits). Left in, they can straddle the train/val split and inflate scores.
-    """
-    seen: set[str] = set()
-    out: list[dict] = []
-    for r in records:
-        key = r["func"]
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(r)
-    return out
+    # Deduping is data.download._dedupe_functions' job, so the local-parquet and HF paths cannot
+    # drift apart on which duplicate survives.
+    return records
 
 
 def summarise(records: list[dict]) -> str:

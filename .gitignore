@@ -9,6 +9,11 @@ _smoke/
 # Source bundles built for transferring the code to a training box (see README).
 # Regenerated on demand; committing them puts a zip of the repo inside the repo.
 *.zip
+*.bundle
+
+# Dataset files. The CodeXGLUE release parquets are ~22 MB and are data, not source -- point
+# data.real_data_path at wherever they live instead of committing them.
+*.parquet
 
 # The Devign paper itself (NeurIPS 2019). Not redistributed here -- read it at
 # https://arxiv.org/abs/1909.03496

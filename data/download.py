@@ -34,6 +34,10 @@ class RawFunction:
     # Commit the function was extracted from. Carried through so the split can be made
     # commit-disjoint (leakage check) and so the Q5 holdout can require unseen commits.
     commit_id: str = ""
+    # Which CodeXGLUE split this function came from ("train"/"validation"/"test"), when the
+    # source preserved one. Empty for sources that carry no split. Consumed by
+    # data.prepare.split_functions when `data.split_by: codexglue`.
+    split: str = ""
 
 
 # ----------------------------------------------------------------------------------------------
@@ -81,6 +85,13 @@ def generate_cve_set(projects: list[str], per_project: int, seed: int = 1234) ->
 # Real data loading
 # ----------------------------------------------------------------------------------------------
 
+_CODEXGLUE_SPLIT_FILES = {
+    "train": "train-00000-of-00001.parquet",
+    "validation": "validation-00000-of-00001.parquet",
+    "test": "test-00000-of-00001.parquet",
+}
+
+
 def _load_records(path: str) -> list[dict]:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".jsonl":
@@ -93,21 +104,81 @@ def _load_records(path: str) -> list[dict]:
     if ext == ".csv":
         with open(path, "r", encoding="utf-8", newline="") as f:
             return list(csv.DictReader(f))
+    if ext == ".parquet":
+        import pyarrow.parquet as pq
+        return pq.read_table(path).to_pylist()
     raise ValueError(f"Unsupported real_data_path extension: {ext}")
 
 
-def load_real(path: str) -> list[RawFunction]:
-    records = _load_records(path)
+def _to_raw(r: dict, split: str = "") -> Optional[RawFunction]:
+    from data.hf_devign import normalise_project
+
+    func = r.get("func") or r.get("function") or r.get("code")
+    if func is None or not str(func).strip():
+        return None
+    return RawFunction(
+        func=func,
+        # The CodeXGLUE parquet types `target` as a bool; the pipeline wants 0/1.
+        target=int(bool(r.get("target", r.get("label", 0)))),
+        project=normalise_project(r.get("project") or r.get("repo") or "unknown"),
+        name=str(r.get("name", r.get("id", ""))),
+        cwe=str(r.get("cwe", "")),
+        commit_id=str(r.get("commit_id", "")),
+        split=str(r.get("split", split)),
+    )
+
+
+def load_devign_parquet_dir(path: str) -> list[RawFunction]:
+    """Load a local copy of the three CodeXGLUE parquet files, PRESERVING their split labels.
+
+    Downloading these by hand sidesteps `huggingface_hub` entirely, which matters on a machine
+    behind a proxy that only intermittently forwards to huggingface.co.
+
+    Read in train -> validation -> test order so that `_dedupe`, which keeps the first occurrence,
+    resolves a function appearing in two splits in favour of the earlier one. That is the safe
+    direction: it removes the duplicate from the evaluation side rather than the training side.
+    """
+    missing = [f for f in _CODEXGLUE_SPLIT_FILES.values()
+               if not os.path.exists(os.path.join(path, f))]
+    if missing:
+        raise FileNotFoundError(
+            f"{path} is missing CodeXGLUE parquet file(s): {', '.join(missing)}. "
+            f"Expected all of: {', '.join(_CODEXGLUE_SPLIT_FILES.values())}")
+
     out: list[RawFunction] = []
-    for r in records:
-        func = r.get("func") or r.get("function") or r.get("code")
-        if func is None:
+    for split, fname in _CODEXGLUE_SPLIT_FILES.items():
+        for r in _load_records(os.path.join(path, fname)):
+            fn = _to_raw(r, split=split)
+            if fn is not None:
+                out.append(fn)
+    return _dedupe_functions(out)
+
+
+def _dedupe_functions(functions: list[RawFunction]) -> list[RawFunction]:
+    """Drop exact-duplicate function bodies, keeping the first occurrence.
+
+    The release contains byte-identical functions (the same helper touched by several commits).
+    Left in, they straddle the split and inflate scores.
+    """
+    seen: set[str] = set()
+    out: list[RawFunction] = []
+    for fn in functions:
+        if fn.func in seen:
             continue
-        target = int(r.get("target", r.get("label", 0)))
-        project = r.get("project") or r.get("repo") or "unknown"
-        out.append(RawFunction(func=func, target=target, project=str(project),
-                               name=str(r.get("name", "")), cwe=str(r.get("cwe", "")),
-                               commit_id=str(r.get("commit_id", ""))))
+        seen.add(fn.func)
+        out.append(fn)
+    return out
+
+
+def load_real(path: str) -> list[RawFunction]:
+    """Load real data from a file, or from a directory of CodeXGLUE parquet splits."""
+    if os.path.isdir(path):
+        return load_devign_parquet_dir(path)
+    out: list[RawFunction] = []
+    for r in _load_records(path):
+        fn = _to_raw(r)
+        if fn is not None:
+            out.append(fn)
     return out
 
 
@@ -132,11 +203,20 @@ def load_raw(path: str) -> list[RawFunction]:
 
 
 def _from_devign_release(data_cfg: dict) -> list[RawFunction]:
-    """The paper's own released data (FFmpeg + QEMU). See data/hf_devign.py."""
-    from data.hf_devign import fetch_devign_release
+    """The paper's own released data (FFmpeg + QEMU).
 
-    records = fetch_devign_release(cache_dir=data_cfg.get("hf_cache_dir"))
-    functions = [RawFunction(**r) for r in records]
+    Prefers a local copy if `data.real_data_path` points at a directory of the three CodeXGLUE
+    parquet files -- downloading them by hand is the reliable option behind a proxy that only
+    intermittently forwards to huggingface.co. Falls back to the HF hub otherwise.
+    """
+    local = data_cfg.get("real_data_path")
+    if local and os.path.isdir(local):
+        functions = load_devign_parquet_dir(local)
+    else:
+        from data.hf_devign import fetch_devign_release
+        records = fetch_devign_release(cache_dir=data_cfg.get("hf_cache_dir"))
+        functions = _dedupe_functions([RawFunction(**r) for r in records])
+
     keep = set(data_cfg.get("projects") or [])
     if keep:
         functions = [f for f in functions if f.project in keep]

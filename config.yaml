@@ -31,9 +31,24 @@ data:
   val_split: 0.125        # paper has no test set; we halve its 25% so the reported number is unbiased
   test_split: 0.125       # untouched by training and early stopping
   paper_split: false      # true -> exact paper 75/25 train/val, no test set
-  split_by: random        # random (paper-faithful) | commit (commit-disjoint leakage check)
+  # random    -- paper-faithful: Sec 3.3 shuffles and re-splits, ignoring any published split.
+  # commit    -- commit-disjoint leakage check (no commit contributes to two sides).
+  # codexglue -- the split the release ships with (21,854/2,732/2,732 before dedupe). NOT the
+  #              paper's configuration, but it is the split every published number on this dataset
+  #              is measured on, so it is the only way to read results against the leaderboard
+  #              rather than only against our own re-split. Requires a source that preserves split
+  #              labels, i.e. real_data_path pointing at the three parquet files.
+  split_by: random
   shuffle: true
   imbalanced_vuln_ratio: 0.10   # Q4: real-world imbalanced setting
+  # With source `file`: a json/jsonl/csv/parquet file of functions.
+  # With source `devign_release`: optionally a DIRECTORY holding the three CodeXGLUE parquet files
+  #   (train/validation/test-00000-of-00001.parquet), used in place of the HuggingFace download.
+  #   Preferred on a machine behind a proxy that only intermittently reaches huggingface.co, and
+  #   required for `split_by: codexglue` since the HF cache path is the only other split-preserving
+  #   source. Download them with:
+  #     curl -L -O "https://huggingface.co/datasets/google/code_x_glue_cc_defect_detection/resolve/main/data/train-00000-of-00001.parquet"
+  #   (repeat for validation and test)
   real_data_path: null
   synthetic:
     enabled: true

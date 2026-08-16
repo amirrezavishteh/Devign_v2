@@ -89,8 +89,40 @@ def commit_disjoint_split(functions: list[RawFunction], train_frac: float, val_f
     return train, val, test
 
 
+def codexglue_split(functions: list[RawFunction], seed: int):
+    """Use the split the CodeXGLUE release ships with (21,854 / 2,732 / 2,732 before dedupe).
+
+    The paper does its own random 75/25, so this is NOT the Sec 3.3 configuration. What it buys is
+    comparability: every published number on this dataset is measured on this exact split, so
+    results can be read against the leaderboard rather than only against our own re-split.
+    """
+    import random
+    buckets: dict[str, list[RawFunction]] = {"train": [], "validation": [], "test": []}
+    unlabelled = 0
+    for fn in functions:
+        if fn.split in buckets:
+            buckets[fn.split].append(fn)
+        else:
+            unlabelled += 1
+    if unlabelled:
+        raise ValueError(
+            f"data.split_by='codexglue' needs every function to carry a split label, but "
+            f"{unlabelled} of {len(functions)} have none. This source does not preserve the "
+            f"CodeXGLUE split -- point data.real_data_path at a directory of the three parquet "
+            f"files, or use split_by: random.")
+
+    rng = random.Random(seed)
+    for part in buckets.values():
+        rng.shuffle(part)
+    return buckets["train"], buckets["validation"], buckets["test"]
+
+
 def split_functions(functions: list[RawFunction], data_cfg: dict, seed: int):
     """Dispatch on data.paper_split / data.split_by. Returns (train, val, test)."""
+    split_by = data_cfg.get("split_by", "random")
+    if split_by == "codexglue":
+        return codexglue_split(functions, seed)
+
     train_frac = data_cfg["train_split"]
     if data_cfg.get("paper_split"):
         val_frac, test_frac = 1.0 - train_frac, 0.0
@@ -98,8 +130,11 @@ def split_functions(functions: list[RawFunction], data_cfg: dict, seed: int):
         val_frac = data_cfg.get("val_split", (1.0 - train_frac) / 2)
         test_frac = data_cfg.get("test_split", (1.0 - train_frac) / 2)
 
-    if data_cfg.get("split_by", "random") == "commit":
+    if split_by == "commit":
         return commit_disjoint_split(functions, train_frac, val_frac, test_frac, seed)
+    if split_by != "random":
+        raise ValueError(f"unknown data.split_by: {split_by!r} "
+                         "(expected random | commit | codexglue)")
     return stratified_split3(functions, train_frac, val_frac, test_frac, seed)
 
 
