@@ -15,7 +15,7 @@ Stated before Phase 3 was run, and not revised afterwards. Committed in
 
 | | hypothesis | status |
 |---|---|---|
-| **H1** | Attention-MIL pooling **matches or beats** the FIXED Conv module on detection. *Matching is a success*: the claim is that Eq. 9's complexity buys nothing once its optimisation defect is corrected. | *not measured* |
+| **H1** | Attention-MIL pooling **matches or beats** the FIXED Conv module on detection. *Matching is a success*: the claim is that Eq. 9's complexity buys nothing once its optimisation defect is corrected. | **partially confirmed** — ties on ROC-AUC/PR-AUC/F1, **loses accuracy by 1.89 on 5/5 seeds** |
 | **H2** | Attention weights localise the vulnerability to source lines far better than chance, and better than any localisation obtainable from the Conv module. | *not measured* |
 | **H3** | MIL needs no `logit_affine` rescue, because it is linear in the node embeddings and therefore has a live gradient at initialisation. | **confirmed** |
 
@@ -48,32 +48,55 @@ loss 24.6 on a 43.2%-positive split. Its large gradient is a saturated sigmoid, 
 
 ---
 
-## 3.1 Detection — *not measured*
+## 3.1 Detection — measured (MIL and Conv complete; Ggrn and `affine FALSE` running)
 
-One trunk, five seeds per arm, CodeXGLUE split and commit-disjoint split.
+One trunk, **5 seeds per arm**, CodeXGLUE split, held-out test at the validation-tuned threshold.
+All seeds share identical config, train-split and test-split hashes, on `cuda:1` with TF32 off.
 
-| readout | Acc | F1@0.5 | F1@tuned | ROC-AUC | PR-AUC | params |
+| readout | accuracy | F1 | ROC-AUC | PR-AUC | params |
+|---|---|---|---|---|---|
+| **conv, `logit_affine` TRUE** (the honest baseline) | **63.50 ± 0.83** | 56.27 ± **4.57** | 68.58 ± 0.88 | 63.32 ± 1.20 | 631,410 |
+| **mil (k=1)** | 61.61 ± 0.70 | **58.47 ± 0.72** | 68.08 ± 0.59 | 62.58 ± 0.99 | 630,785 |
+| sum (Eq. 5, Ggrn) | *running* | | | | 553,331 |
+| conv, `logit_affine` FALSE ← paper as written | *running* | | | | 631,410 |
+| majority class | 56.05 | 0.00 | 50.00 | 43.95 | — |
+
+Paired per-seed, MIL − Conv:
+
+| metric | delta | MIL wins | p | p floor | Cohen's d | reading |
 |---|---|---|---|---|---|---|
-| sum (Eq. 5, Ggrn) | | | | | | 553,331 |
-| conv, `logit_affine` FALSE ← paper as written | | | | | | 631,410 |
-| **conv, `logit_affine` TRUE ← the honest baseline** | | | | | | 631,410 |
-| mil (k=1) | | | | | | 630,785 |
-| mil (k=4) | | | | | | |
-| majority class | | | | | | — |
+| ROC-AUC | −0.50 | 1/5 | 0.125 | 0.0625 | −1.23 | **tie** — inside both stds |
+| PR-AUC | −0.74 | 2/5 | 0.625 | 0.0625 | −0.44 | **tie** |
+| F1 | **+2.20** | 3/5 | 0.312 | 0.0625 | +0.45 | **tie** — sign flips |
+| accuracy | **−1.89** | **0/5** | 0.062 | 0.0625 | **−1.91** | **Conv wins, consistently** |
 
-Parameter counts are already measured: MIL is within **0.1%** of Devign, so neither arm can win on
-capacity alone.
+### H1: partially confirmed, and the part that fails is stated first
 
-**The comparison that counts is MIL vs `conv, logit_affine TRUE`.** Beating Eq. 9 as written is
-not a finding — that arm attenuates the trunk gradient 384×, and any reviewer will say so in one
-line. `scripts/compare_readouts.py` computes every delta against the fixed baseline for that
-reason, and refuses to build a table from two files naming the same arm.
+**MIL does not match the fixed Conv module on accuracy.** It loses 1.89 points, on **every one of
+five seeds**, with a large effect size (d = −1.91) and a p-value at the floor the test can reach.
+That is the most consistent signal in the table and it goes against the hypothesis. H1 predicted
+"matches or beats"; on accuracy it does neither.
 
-Reported with a paired Wilcoxon signed-rank test across seeds and paired Cohen's d. **With 5 seeds
-the smallest attainable two-sided p is 0.0625**, so no comparison here can reach p < 0.05 however
-consistent it looks; the floor is printed beside every p-value so it cannot be misread. Phase 1
-measured seed-to-seed F1 spread at ±2.06 to ±2.57, so **differences under ~2 points are noise** and
-are reported as ties rather than as a rank order.
+**On threshold-free ranking quality it is a tie.** ROC-AUC −0.50 and PR-AUC −0.74, both far inside
+the per-arm standard deviations, sign inconsistent. The two readouts order the test set about
+equally well; they differ in where their operating point lands, not in what they know.
+
+**MIL is dramatically more stable.** Per-seed test F1:
+
+```
+conv:  52.22  59.79  62.25  52.07  55.01     range 10.18,  std 4.57
+mil:   58.21  57.35  58.80  59.20  58.81     range  1.85,  std 0.72
+```
+
+Conv's F1 std is **6.3×** MIL's, and its recall std is **10.38** against MIL's 2.40. A single-seed
+comparison between these two arms could have reported anything from MIL +6.6 to MIL −4.0 on F1
+purely by seed choice. That is a property worth having, and it is not what H1 was about, so it is
+reported as an observation rather than folded into the hypothesis.
+
+**Verdict on H1: not supported as stated.** The claim was that Eq. 9's complexity buys nothing
+once its optimisation defect is corrected. On ranking quality that holds. On accuracy the fixed
+Conv module is genuinely and repeatably better by ~1.9 points, and no amount of framing makes that
+a tie.
 
 ### Context from Phase 1
 
