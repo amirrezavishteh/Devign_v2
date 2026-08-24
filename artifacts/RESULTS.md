@@ -85,11 +85,60 @@ so it is recorded rather than silently applied. See `models/devign.py::GgrnModel
 
 ---
 
-## 2. Reproduction vs the paper — *not measured*
+## 2. Reproduction vs the paper
 
-Awaiting the seed sweeps. Will report accuracy and F1 at threshold 0.5 (the only figures
-comparable to the paper), F1 at the validation-tuned threshold, ROC-AUC, PR-AUC, and the
-majority-class baseline, as mean ± std over ≥3 seeds.
+CodeXGLUE split, Combined (QEMU + FFmpeg), **mean ± std over 3 seeds**. `test@tuned` applies a
+threshold fitted on validation to the held-out test split, so it is unbiased. `val@0.5` is the
+fixed-threshold figure and is the one comparable to the paper.
+
+| metric | Devign test@tuned | Devign val@0.5 | Ggrn test@tuned | majority class |
+|---|---|---|---|---|
+| accuracy | 62.76 ± 1.43 | 64.69 ± 0.42 | 61.79 ± 0.29 | **56.05** |
+| F1 | 57.56 ± 2.57 | 55.86 ± 2.12 | 57.16 ± 2.06 | **0.00** |
+| precision | 57.69 ± 1.78 | 58.15 ± 1.35 | 56.38 ± 0.85 | 0.00 |
+| recall | 57.60 ± 5.01 | 53.99 ± 5.22 | 58.16 ± 4.92 | 0.00 |
+| ROC-AUC | 68.67 ± 1.54 | 70.83 ± 0.21 | 67.08 ± 0.87 | 50.00 |
+| PR-AUC | 63.15 ± 1.95 | 63.11 ± 0.49 | 60.48 ± 1.94 | 43.95 |
+
+Manifests agree across all six runs: identical split hashes, identical seedless config hash, no
+run excluded.
+
+### Against the paper
+
+The paper reports **74.33 accuracy / 73.07 F1** on QEMU. This reproduction reaches **62.76 /
+57.56** on the pooled QEMU+FFmpeg CodeXGLUE split — roughly 11.6 accuracy points and 15.5 F1
+points below. Published reproductions of this dataset cluster at 60–66% accuracy (CodeBERT ≈62%),
+so this sits inside the normal band and the paper's figure is the outlier. It is not a like-for-
+like cell: the paper's QEMU column is a different split of a different project subset, and no
+honest comparison closes that gap.
+
+The number that matters for "did it learn anything" is the majority-class row: 56.05 accuracy at
+0.00 F1. Both models clear it, so the models are doing real work — but 62.76 against a 56.05 floor
+is a 6.7-point margin, not the 18-point margin the paper's number would imply.
+
+### Q2: does the Conv module beat flat summation? — **no, not reproducibly**
+
+The paper's own ablation claims the Conv module adds **+4.66 accuracy and +6.37 F1** over Ggrn.
+Paired per-seed differences (Devign − Ggrn, test @ tuned threshold):
+
+| metric | seed 1 | seed 2 | seed 3 | mean | Devign wins |
+|---|---|---|---|---|---|
+| accuracy | +1.17 | +2.05 | −0.29 | **+0.98** | 2/3 |
+| F1 | −2.59 | +5.73 | −1.93 | **+0.40** | **1/3** |
+| ROC-AUC | +1.99 | +3.72 | −0.95 | +1.59 | 2/3 |
+| PR-AUC | +3.16 | +6.21 | −1.36 | +2.67 | 2/3 |
+
+**The sign flips across seeds on every metric.** Devign wins F1 on one seed of three despite a
+positive mean, and the per-seed spread (±2.57 for Devign, ±2.06 for Ggrn) is larger than the mean
+difference on every metric except PR-AUC. The claimed +6.37 F1 advantage does not appear; +0.40
+with an inconsistent sign is indistinguishable from noise.
+
+No significance test is reported here, deliberately. With 3 seeds a Wilcoxon signed-rank test has
+a minimum attainable p of 0.25, so it cannot reject anything and quoting it would dress noise as
+statistics. Phase 3 runs 5 seeds, where the test becomes meaningful.
+
+This is the context in which any new readout must be judged: the incumbent's advantage over a flat
+sum is already within noise, so "beats Eq. 9" is a weaker claim than it sounds.
 
 ## 3. `paper_faithful` vs `repo_default`
 
