@@ -27,7 +27,18 @@ from devign_data.word2vec_embed import NodeFeaturizer
 # mismatched cache is not, so `DevignDataset.load` refuses anything it did not write.
 #   1 -- `data.dataset` era (implicit; never stamped)
 #   2 -- renamed to `devign_data.dataset`
-FORMAT_VERSION = 2
+#   3 -- GraphSample carries per-node line spans (needed for attention -> source localisation)
+FORMAT_VERSION = 3
+
+# Oldest version still loadable. A bump is only backward-compatible when it ADDS an optional field
+# that training does not read -- v3 adds `node_lines`, which only localisation touches. Anything
+# that changes an existing field's meaning must raise this floor to FORMAT_VERSION, because then a
+# stale cache really would silently train a different model.
+#
+# The point of the floor is that re-preparing 20k graphs is ~15 minutes and invalidating a running
+# multi-hour sweep is not. A v2 cache still trains identically; it just cannot localise, and
+# `attention_to_lines` says so instead of scoring line 0.
+MIN_COMPATIBLE_VERSION = 2
 
 
 def _stale_processed_data(path: str, why: str) -> RuntimeError:
@@ -45,6 +56,41 @@ class GraphSample:
     label: int
     project: str
     name: str = ""
+    # 1-based inclusive source line span per node, [m, 2] int32. Every tree-sitter node has a byte
+    # range, so this is a projection of information the parse already had -- it was simply dropped
+    # at featurisation time. Attention over nodes becomes attention over LINES through this, which
+    # is the only reason localisation needs no separate model.
+    #
+    # Optional so a batch hand-built in a test does not have to supply it; `None` means the sample
+    # predates this field, and the localisation code says so rather than silently scoring line 0.
+    node_lines: np.ndarray | None = None
+
+
+def node_line_spans(graph, source: str) -> np.ndarray:
+    """Per-node 1-based inclusive [start_line, end_line], shape [m, 2] int32.
+
+    Derived from the byte offsets tree-sitter already recorded, via a prefix count of newlines --
+    one pass over the source, then O(log n) per node, rather than re-parsing or re-scanning.
+
+    Offsets are BYTE offsets into the UTF-8 encoding, so the newline positions have to be found in
+    the encoded bytes too. Counting newlines in the `str` would drift by one line for every
+    non-ASCII character earlier in the file, which C source does contain (comments, string
+    literals), and the drift is silent.
+    """
+    data = source.encode("utf-8")
+    newline_positions = np.frombuffer(data, dtype=np.uint8)
+    newline_positions = np.flatnonzero(newline_positions == 0x0A)
+
+    starts = np.fromiter((n.start_byte for n in graph.nodes), dtype=np.int64,
+                         count=graph.num_nodes)
+    # `end_byte` is exclusive; step back one so a node ending exactly at a newline is attributed
+    # to the line it occupies rather than the following one.
+    ends = np.fromiter((max(n.start_byte, n.end_byte - 1) for n in graph.nodes),
+                       dtype=np.int64, count=graph.num_nodes)
+
+    start_lines = np.searchsorted(newline_positions, starts, side="right") + 1
+    end_lines = np.searchsorted(newline_positions, ends, side="right") + 1
+    return np.stack([start_lines, end_lines], axis=1).astype(np.int32)
 
 
 def dedupe_edges(arr: np.ndarray) -> np.ndarray:
@@ -80,6 +126,7 @@ def sample_from_graph(fn: RawFunction, graph, featurizer: NodeFeaturizer,
         code_feat=code_feat, type_ids=type_ids, edges=edges,
         num_nodes=graph.num_nodes, label=int(fn.target),
         project=fn.project, name=fn.name,
+        node_lines=node_line_spans(graph, fn.func),
     )
 
 
@@ -132,9 +179,14 @@ class DevignDataset(Dataset):
             # before the `data` -> `devign_data` rename names a module that no longer exists.
             raise _stale_processed_data(path, f"it was written by the old `data` package ({exc})")
         found = d.get("format_version", 0)
-        if found != FORMAT_VERSION:
+        if not (MIN_COMPATIBLE_VERSION <= found <= FORMAT_VERSION):
             raise _stale_processed_data(
-                path, f"format version {found}, this build writes {FORMAT_VERSION}")
+                path, f"format version {found}, this build reads "
+                      f"{MIN_COMPATIBLE_VERSION}-{FORMAT_VERSION}")
+        if found < FORMAT_VERSION:
+            print(f"[dataset] {path} is format v{found} (current v{FORMAT_VERSION}). Training is "
+                  f"unaffected; per-node line spans are absent, so localisation is unavailable "
+                  f"until it is re-prepared.")
         return cls(d["samples"], d["type_vocab_size"], edge_types=d["edge_types"])
 
 
