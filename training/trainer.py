@@ -6,6 +6,7 @@ regularization via weight_decay, and early stopping with patience=100 epochs on 
 from __future__ import annotations
 
 import copy
+import csv
 import os
 from dataclasses import dataclass
 
@@ -61,6 +62,12 @@ class TrainConfig:
     # Skip a micro-batch that OOMs rather than aborting the run. The node-budget sampler bounds
     # memory, but a co-tenant grabbing VRAM mid-run can still push a single batch over.
     skip_oom_batches: bool = True
+    # Per-epoch training curve, written as CSV. The two series that matter are `prob_spread` and
+    # `trunk_grad_norm`: Eq. 9's product readout starts with the whole batch's logits ~6e-4 apart
+    # and throttles the gradient reaching the GGNN, so a flat spread and a tiny trunk gradient are
+    # what the defect LOOKS like from inside a run. Printing them per epoch makes the argument
+    # reproducible instead of quoted.
+    csv_log_path: str | None = None
 
 
 def make_train_config(cfg: dict, device: str, train_labels=None, epochs: int | None = None,
@@ -105,6 +112,25 @@ def _labels_of(batch):
     if hasattr(batch, "labels"):
         return batch.labels
     return batch["labels"]
+
+
+def trunk_grad_norm(model) -> float:
+    """L2 norm of the gradient that actually reached the GGNN trunk.
+
+    This is the quantity the Eq. 9 finding is about. The readout multiplies two MLP heads, so at
+    initialisation d(z*y)/dz = y and d(z*y)/dy = z are both near zero and the trunk is starved
+    through BOTH paths at once. Measuring it per epoch shows whether the head ever came alive.
+
+    Returns 0.0 before the first backward, or if the model exposes no `trunk`.
+    """
+    trunk = getattr(model, "trunk", None)
+    if trunk is None:
+        return 0.0
+    total = 0.0
+    for p in trunk.parameters():
+        if p.grad is not None:
+            total += float(p.grad.detach().pow(2).sum())
+    return total ** 0.5
 
 
 @torch.no_grad()
@@ -189,22 +215,35 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
                     "scheduler": scheduler.state_dict() if scheduler else None}, tmp)
         os.replace(tmp, cfg.checkpoint_path)   # atomic: a crash mid-write can't corrupt it
 
+    # A fresh run starts a fresh curve. Without this the CSV appends onto the previous run's rows
+    # and the file silently becomes two runs stacked end to end, with a second `epoch 1` partway
+    # down. A RESUMED run (start_epoch > 1) must append, which is exactly the distinction here.
+    if cfg.csv_log_path and start_epoch == 1 and os.path.exists(cfg.csv_log_path):
+        os.remove(cfg.csv_log_path)
+
     for epoch in range(start_epoch, cfg.epochs + 1):
         model.train()
         total_loss = 0.0
         n_batches = 0
         pending = 0      # graphs accumulated since the last optimizer step
         n_graphs = 0
+        grad_norm_sum = 0.0    # mean ||grad|| into the GGNN trunk, over this epoch's steps
+        grad_norm_count = 0
         optimizer.zero_grad(set_to_none=True)
 
         def _step(pending_graphs: int):
             """Rescale accumulated grads to a mean over `pending_graphs`, clip, step."""
+            nonlocal grad_norm_sum, grad_norm_count
             if pending_graphs <= 0:
                 return
             if cfg.accumulate_to_batch_size:
                 for p in model.parameters():
                     if p.grad is not None:
                         p.grad /= pending_graphs
+            # Sampled AFTER rescaling (so it is per-graph comparable across epochs) and BEFORE
+            # clipping and zero_grad, which would otherwise destroy the thing being measured.
+            grad_norm_sum += trunk_grad_norm(model)
+            grad_norm_count += 1
             if cfg.grad_clip:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
@@ -265,15 +304,34 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         if scheduler is not None:
             scheduler.step(score)
 
+        # One row per epoch. `prob_spread` and `trunk_grad_norm` are the Eq. 9 evidence; the rest
+        # is enough to reconstruct the run without the stdout log.
+        spread_val = float(val_probs.max() - val_probs.min()) if val_probs.size else 0.0
+        mean_trunk_grad = grad_norm_sum / grad_norm_count if grad_norm_count else 0.0
+        if cfg.csv_log_path:
+            os.makedirs(os.path.dirname(cfg.csv_log_path) or ".", exist_ok=True)
+            new_file = not os.path.exists(cfg.csv_log_path)
+            with open(cfg.csv_log_path, "a", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                if new_file:
+                    w.writerow(["epoch", "train_loss", "val_auc", "val_pr_auc", "val_f1",
+                                "val_accuracy", "prob_spread", "lr", "trunk_grad_norm",
+                                "oom_skipped"])
+                w.writerow([epoch, round(total_loss / max(1, n_batches), 6),
+                            round(val_metrics["auc"], 4), round(val_metrics["pr_auc"], 4),
+                            round(val_metrics["f1"], 4), round(val_metrics["accuracy"], 4),
+                            f"{spread_val:.6e}", f"{optimizer.param_groups[0]['lr']:.6e}",
+                            f"{mean_trunk_grad:.6e}", oom_skipped])
+
         if verbose and (epoch % 5 == 0 or epoch == 1 or improved):
             # `spread` is the width of the predicted-probability band. Eq. 9's multiplicative
             # readout starts almost degenerate (~6e-4 wide), so a spread still under ~0.05 after a
             # few epochs means the head has not come alive and nothing downstream is meaningful.
-            spread = float(val_probs.max() - val_probs.min()) if val_probs.size else 0.0
             oom_note = f" | oom-skipped {oom_skipped}" if oom_skipped else ""
             print(f"  epoch {epoch:3d} | loss {total_loss / max(1, n_batches):.4f} "
                   f"| val acc {val_metrics['accuracy']:.2f} f1 {val_metrics['f1']:.2f} "
-                  f"| spread {spread:.3f} | lr {optimizer.param_groups[0]['lr']:.2e} "
+                  f"| spread {spread_val:.3f} | trunk|g| {mean_trunk_grad:.2e} "
+                  f"| lr {optimizer.param_groups[0]['lr']:.2e} "
                   f"| best {cfg.monitor} {best_score:.2f}{oom_note}")
 
         _save_checkpoint(epoch)

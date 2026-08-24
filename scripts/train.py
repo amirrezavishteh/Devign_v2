@@ -123,9 +123,11 @@ def train_graph_model(cfg, model_name: str, device, epochs=None, project: str | 
         pos_rate=positive_rate(train_ds))
 
     # Checkpoint beside the model so an interrupted run resumes at the last completed epoch.
+    out_dir = artifact_dir(cfg, model_name, project)
     tcfg = make_train_config(
         cfg, device, [s.label for s in train_ds.samples], epochs,
-        checkpoint_path=os.path.join(artifact_dir(cfg, model_name, project), "checkpoint.pt"))
+        checkpoint_path=os.path.join(out_dir, "checkpoint.pt"),
+        csv_log_path=os.path.join(out_dir, "training_curve.csv"))
     model, best = train_model(model, train_loader, val_loader, tcfg, verbose=verbose)
 
     # The threshold is a hyperparameter chosen on validation, so applying it to the held-out TEST
