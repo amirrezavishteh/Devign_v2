@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 import torch
 import torch.nn as nn
@@ -181,6 +182,7 @@ def main():
     report(rows)
 
     if args.json:
+        os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
         with open(args.json, "w") as f:
             json.dump({"config": args.config, "seed": seed, "device": device,
                        "rows": rows}, f, indent=2)
