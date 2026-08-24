@@ -149,10 +149,29 @@ def test_padded_nodes_never_receive_messages():
 
 
 def _free_gpu_bytes() -> int:
-    if not torch.cuda.is_available():
+    """Most free memory on any visible GPU, or 0 if that cannot be determined.
+
+    Every failure path returns 0 (meaning "skip"), and that is the whole point. The first version
+    called mem_get_info() bare and raised `CUDA error: out of memory` DURING COLLECTION -- creating
+    a context on a card held at 80 of 82 GB fails outright, so the guard written to prevent an OOM
+    failure became one, and took the entire test session down with it rather than one test.
+
+    Checking every device rather than the default one matters for the same reason: the config pins
+    training to card 1, so a full card 0 must not decide whether card 1's tests run.
+    """
+    try:
+        if not torch.cuda.is_available():
+            return 0
+        best = 0
+        for i in range(torch.cuda.device_count()):
+            try:
+                free, _total = torch.cuda.mem_get_info(i)
+                best = max(best, int(free))
+            except Exception:
+                continue          # this card is unusable; another one may not be
+        return best
+    except Exception:
         return 0
-    free, _total = torch.cuda.mem_get_info()
-    return free
 
 
 # This suite runs on a SHARED A100 where co-tenants routinely hold 80 of 82 GB. Without this
