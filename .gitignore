@@ -48,3 +48,8 @@ Thumbs.db
 # directory so preparing one cannot clobber another.
 data/processed_*/
 data/codexglue/
+
+# Run logs. Regenerated on every run, and their presence in `git status` made every manifest
+# record `dirty: true`, which devalues the flag that is supposed to mean "this run came from a
+# modified working tree".
+logs/

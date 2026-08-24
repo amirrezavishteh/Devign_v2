@@ -41,12 +41,7 @@ def _git(*args: str) -> str | None:
         return None
 
 
-def git_state() -> dict:
-    """Commit SHA plus whether the tree was dirty when the run started.
-
-    `dirty` matters as much as the SHA: a run from a modified working tree is not reproducible
-    from that commit, and silently attributing it to the commit is worse than admitting it.
-    """
+def _read_git_state() -> dict:
     sha = _git("rev-parse", "HEAD")
     status = _git("status", "--porcelain")
     return {
@@ -54,6 +49,28 @@ def git_state() -> dict:
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
         "dirty": bool(status) if status is not None else None,
     }
+
+
+# Sampled ONCE, when this module is first imported, and reused for every manifest the process
+# writes. Python does not reload modules mid-run, so a long job executes the code it started with
+# no matter what the working tree does afterwards -- and sampling `git rev-parse` again per seed
+# recorded whatever HEAD happened to be at write time instead.
+#
+# That is not hypothetical. A 3-seed sweep ran 12:50 to 20:39 while three commits landed; seeds 1
+# and 2 recorded one SHA, seed 3 another, and compare_manifests duly declared them different
+# experiments. Config hash, split hash, GPU and TF32 all matched, because the code really was
+# identical. A warning that fires on runs which are in fact comparable is worse than no warning:
+# it is how a genuinely mismatched run gets waved through later.
+_GIT_STATE = _read_git_state()
+
+
+def git_state() -> dict:
+    """Commit SHA and dirty flag, as of the moment this process started.
+
+    `dirty` matters as much as the SHA: a run from a modified working tree is not reproducible
+    from that commit, and silently attributing it to the commit is worse than admitting it.
+    """
+    return dict(_GIT_STATE)
 
 
 # Keys that say WHERE output goes, not WHAT is computed. Two runs that differ only in these are
