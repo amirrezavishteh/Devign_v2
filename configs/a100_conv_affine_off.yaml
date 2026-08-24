@@ -1,0 +1,24 @@
+# The paper's Eq. 9 readout EXACTLY as written -- no learnable scale, no bias -- on otherwise
+# repo-default settings.
+#
+# This is not the same arm as configs/a100_paper_faithful.yaml. That one reverses every deviation
+# at once (lr, schedule, monitor, node features, conv axis, readout), so its result cannot say
+# which change mattered. This isolates ONE knob: the affine term on the graph-level logit.
+# Everything else matches the repo default, so the delta against configs/a100_codexglue.yaml is
+# attributable to the affine and nothing else.
+#
+# It is the "conv, logit_affine FALSE" row of the Phase 3 table: the paper as written, present so
+# a reader can see it, and NOT the baseline any claim is measured against. Beating a readout that
+# passes 384x less gradient to the trunk than a linear head is not a finding.
+extends: ../config_a100.yaml
+
+data:
+  split_by: codexglue
+  real_data_path: data/codexglue
+  # Same node features as the repo default, so the prepared graphs are shared rather than rebuilt.
+  processed_dir: data/processed_codexglue
+
+model:
+  conv:
+    logit_affine: false
+    logit_scale_init: 1.0
