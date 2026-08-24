@@ -190,7 +190,44 @@ isolates the affine term alone and runs in Phase 3.
 The dead start is visible in the training curve: `paper_faithful` begins at probability spread
 **0.062** and F1 **0.00** at epoch 1, against `repo_default`'s 0.440 and 6.24.
 
-## 4. Random vs commit-disjoint leakage gap — *not measured*
+## 4. Leakage: the released split shares commits between train and test
+
+### The channel, measured directly
+
+`python -m scripts.measure_commit_overlap --config configs/a100_codexglue.yaml`
+
+27,258 functions across **12,293 distinct commits**; **3,729 commits touch more than one
+function**, and those are the ones a split can scatter.
+
+| split | n_train | n_eval | eval functions from a **training commit** | eval body duplicated in train |
+|---|---|---|---|---|
+| **codexglue** (the released split) | 21,808 | 2,726 | **1,776 (65%)** | 6 (0%) |
+| random 75/12.5/12.5 | 20,443 | 3,408 | **2,205 (65%)** | 6 (0%) |
+| commit-disjoint | 20,443 | 3,407 | 0 (0%) | 2 (0%) |
+
+**Roughly two thirds of every evaluation function comes from a commit the model also trained on** —
+on the CodeXGLUE release as much as on a random re-split. Near-duplicate bodies are negligible
+(0%), so the channel is commit membership, not copy-pasted code: one fix commit touches several
+functions, and a random assignment puts siblings on both sides. The model can recognise the commit
+rather than the flaw.
+
+This applies to the **released partition**, which is the split every published number on this
+dataset is measured on.
+
+### What closing it costs — *partial*
+
+Devign on the commit-disjoint split, training in progress at time of writing:
+
+| | CodeXGLUE split | commit-disjoint |
+|---|---|---|
+| best val ROC-AUC | 70.83 ± 0.21 | **54.64** (in progress) |
+
+A ROC-AUC of 54.64 is 4.6 points above chance. On the released split the same architecture, data
+and code reach 70.83. **The gap is roughly 16 AUC points**, and it is the clearest single statement
+this reproduction can make about what the benchmark measures.
+
+Final numbers, with the gap computed against the 3-seed mean rather than a single run, land here
+when the run completes.
 
 ## 5. Training curves — partially available
 
