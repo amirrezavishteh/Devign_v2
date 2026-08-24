@@ -20,8 +20,12 @@ SEEDS="${SEEDS:-1 2 3 4 5}"
 
 mkdir -p logs artifacts/seeds
 
-# Wait for any Phase 1 sweep still running.
-while pgrep -u "$USER" -f "scripts.run_seeds" >/dev/null; do sleep 60; done
+# Wait for ANY of this project's training entry points, not just run_seeds. The first version
+# watched run_seeds alone, so a Phase 1 leakage check (scripts.run_leakage_check) and a Phase 3
+# sweep started training concurrently on the same card. It did no harm at the time because 78 GB
+# were free, but on a full card it would have meant OOM-skipped batches in both -- silently
+# training each on less data than configured.
+while pgrep -u "$USER" -f "scripts\.(run_seeds|train|run_leakage_check|run_ablation|reproduce)" >/dev/null; do sleep 60; done
 
 stage () {                      # stage <logname> <args...>
   local name="$1"; shift

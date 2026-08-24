@@ -36,14 +36,35 @@ def _leakage_config(cfg: dict) -> dict:
     return cfg
 
 
-def _load_random_split_metrics(cfg: dict, model_name: str) -> dict | None:
-    """The Combined-project random-split run, trained by scripts.reproduce / scripts.train
-    --project combined -- this is the number the leakage check's gap is measured against."""
+def _load_random_split_metrics(cfg: dict, model_name: str,
+                               baseline_json: str | None = None) -> dict | None:
+    """The number the leakage gap is measured against.
+
+    Two sources, in order of preference:
+
+    `baseline_json` -- a summary written by scripts.run_seeds, i.e. a MEAN OVER SEEDS. This is the
+    right comparison: the gap being measured is a few points, and Phase 1 measured seed-to-seed F1
+    spread at +/-2.06 to +/-2.57, so comparing a commit-disjoint run against a single random-split
+    run could report seed noise as leakage.
+
+    Otherwise the single-run artifact from scripts.train / scripts.reproduce, which is what exists
+    when no sweep has been run. Returns None if neither is present, and the caller reports the
+    commit-disjoint number alone rather than inventing a gap.
+    """
+    if baseline_json and os.path.exists(baseline_json):
+        with open(baseline_json) as f:
+            summary = json.load(f)
+        block = summary.get("val_at_0.5") or {}
+        out = {k: v.get("mean") for k, v in block.items() if isinstance(v, dict)}
+        out["_source"] = f"{baseline_json} (mean over seeds {summary.get('seeds')})"
+        return out if out.get("accuracy") is not None else None
     path = os.path.join(artifact_dir(cfg, model_name, "combined"), "metrics.json")
     if not os.path.exists(path):
         return None
     with open(path) as f:
-        return json.load(f)["best_val"]
+        out = dict(json.load(f)["best_val"])
+    out["_source"] = f"{path} (single run)"
+    return out
 
 
 def main():
@@ -51,6 +72,9 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--models", nargs="+", default=["devign", "ggrn"], choices=["devign", "ggrn", "mil"])
     ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--baseline-json", default=None,
+                    help="a scripts.run_seeds summary to measure the gap against; a mean over "
+                         "seeds, so the gap is not read off a single noisy run")
     ap.add_argument("--force-prepare", action="store_true",
                     help="rebuild the commit-disjoint processed_dir even if it already exists")
     args = ap.parse_args()
@@ -80,11 +104,13 @@ def main():
               f"({len(train_ds)} train / {len(val_ds)} val)")
         _, best = train_model(model, train_loader, val_loader, tcfg, verbose=True)
 
-        random_metrics = _load_random_split_metrics(base_cfg, model_name)
+        random_metrics = _load_random_split_metrics(base_cfg, model_name, args.baseline_json)
         entry = {"commit_disjoint": best, "random_split": random_metrics}
         if random_metrics:
+            entry["baseline_source"] = random_metrics.get("_source")
             entry["gap"] = {k: round(random_metrics[k] - best[k], 2)
-                            for k in ("accuracy", "f1") if k in best and k in random_metrics}
+                            for k in ("accuracy", "f1", "auc", "pr_auc")
+                            if random_metrics.get(k) is not None and k in best}
         results[model_name] = entry
         gap = entry.get("gap")
         print(f"[leakage] {model_name}: commit-disjoint acc {best['accuracy']:.2f} "

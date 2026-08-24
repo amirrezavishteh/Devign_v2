@@ -13,8 +13,12 @@ PY="${PY:-/media/external20/amirreza_vishteh/anaconda3/envs/devigen/bin/python}"
 # CUDA_VISIBLE_DEVICES as well would remap the indices underneath that setting, so the config
 # would be describing a card it is not actually using -- and the manifest would record the lie.
 
-# Wait for anything already training to finish.
-while pgrep -u "$USER" -f "scripts.run_seeds" >/dev/null; do sleep 60; done
+# Wait for ANY of this project's training entry points, not just run_seeds. The first version
+# watched run_seeds alone, so a Phase 1 leakage check (scripts.run_leakage_check) and a Phase 3
+# sweep started training concurrently on the same card. It did no harm at the time because 78 GB
+# were free, but on a full card it would have meant OOM-skipped batches in both -- silently
+# training each on less data than configured.
+while pgrep -u "$USER" -f "scripts\.(run_seeds|train|run_leakage_check|run_ablation|reproduce)" >/dev/null; do sleep 60; done
 
 stage () {                      # stage <logname> <args...>
   local name="$1"; shift
