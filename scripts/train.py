@@ -1,8 +1,9 @@
-"""CLI: train a graph model (Devign or Ggrn) on the prepared dataset.
+"""CLI: train a graph model (Devign, Ggrn or Mil) on the prepared dataset.
 
 Usage:
     python -m scripts.train --model devign --config config.yaml
     python -m scripts.train --model ggrn
+    python -m scripts.train --model mil     # attention MIL readout
 
 The trained model + metadata are saved under <artifacts_dir>/<model>/.
 """
@@ -185,7 +186,7 @@ def save_graph_model(cfg, model, model_name: str, project: str | None, metrics: 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=["devign", "ggrn"], default="devign")
+    ap.add_argument("--model", choices=["devign", "ggrn", "mil"], default="devign")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--project", default=None,

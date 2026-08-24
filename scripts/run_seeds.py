@@ -143,7 +143,7 @@ def run(cfg_path: str, model_name: str, seeds: list[int], project: str | None,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--model", choices=["devign", "ggrn"], default="devign")
+    ap.add_argument("--model", choices=["devign", "ggrn", "mil"], default="devign")
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3],
                     help="at least 3; a single run is not a measurement")
     ap.add_argument("--project", default=None)

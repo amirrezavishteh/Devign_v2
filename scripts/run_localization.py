@@ -8,7 +8,7 @@ Protocol, fixed before any number is produced:
     that decides whether the result means anything: long lines are disproportionately complex
     expressions, so if attention cannot beat length then attention has learned nothing about
     vulnerability. The Conv module gets the best localisation obtainable from it (see below).
-  * Attention entropy is reported per graph. Near-uniform attention means MIL has collapsed to
+  * Score entropy is reported per graph. Near-uniform scores mean the readout has collapsed to
     mean pooling, and any localisation win would be an artifact of the projection rather than of
     the model.
 
@@ -42,15 +42,25 @@ from training.utils import load_config, resolve_device, seed_from_config
 
 
 def normalised_entropy(a: np.ndarray) -> float:
-    """Shannon entropy of one attention row, divided by log(n) so it lands in [0, 1].
+    """Shannon entropy of one score row, divided by log(n) so it lands in [0, 1].
 
-    1.0 means uniform -- the model is attending to nothing in particular and has degenerated into
-    mean pooling. 0.0 means all the mass sits on a single node.
+    1.0 means uniform -- the model spread its mass evenly and is attending to nothing in
+    particular. 0.0 means everything sits on a single node.
+
+    The input is renormalised to sum to 1 first. MIL attention already does, but input-gradient
+    saliency does not: feeding it raw produced a "normalised" entropy of 1.027, which is
+    impossible on [0, 1] and was the tell that the quantity was undefined for that arm. Both
+    readouts now yield a comparable spread measure rather than one real number and one nonsense
+    one.
     """
     a = np.asarray(a, dtype=np.float64)
     a = a[a > 0]
     if a.size <= 1:
         return 0.0
+    total = a.sum()
+    if total <= 0:
+        return 0.0
+    a = a / total
     return float(-(a * np.log(a)).sum() / np.log(a.size))
 
 
@@ -168,7 +178,7 @@ def evaluate_localization(cfg, model_name, model_dir, primevul_path, aggregation
         "model_scores": aggregate(rows_model) if rows_model else None,
         "random_baseline": aggregate(rows_rand) if rows_rand else None,
         "length_prior": aggregate(rows_len) if rows_len else None,
-        "attention_entropy": {
+        "score_entropy": {
             "mean": float(np.mean(entropies)) if entropies else None,
             "median": float(np.median(entropies)) if entropies else None,
             "n": len(entropies),
@@ -201,10 +211,10 @@ def report(res):
             label, r["top_1"], r["top_5"], r["mrr"], r["normalised_rank"],
             r["ifa"], r["ifa_median"], r["n_functions"]))
 
-    e = res["attention_entropy"]
+    e = res["score_entropy"]
     if e["mean"] is not None:
         print()
-        print(f"attention entropy (0 = one node, 1 = uniform): mean {e['mean']:.3f} "
+        print(f"score entropy (0 = one node, 1 = uniform): mean {e['mean']:.3f} "
               f"median {e['median']:.3f} over {e['n']} graphs")
         if e["mean"] > 0.9:
             print("  WARNING: near-uniform. The pooling has collapsed toward mean pooling, so a "

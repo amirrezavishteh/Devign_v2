@@ -49,7 +49,7 @@ def _load_random_split_metrics(cfg: dict, model_name: str) -> dict | None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--models", nargs="+", default=["devign", "ggrn"], choices=["devign", "ggrn"])
+    ap.add_argument("--models", nargs="+", default=["devign", "ggrn"], choices=["devign", "ggrn", "mil"])
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--force-prepare", action="store_true",
                     help="rebuild the commit-disjoint processed_dir even if it already exists")

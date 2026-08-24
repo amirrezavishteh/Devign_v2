@@ -47,7 +47,7 @@ def _one_run(cfg: dict, model_name: str, device: str, epochs: int, out_root: str
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--model", choices=["devign", "ggrn"], default="devign")
+    ap.add_argument("--model", choices=["devign", "ggrn", "mil"], default="devign")
     ap.add_argument("--epochs", type=int, default=3,
                     help="short by design; drift shows up in the first epoch if it exists")
     ap.add_argument("--keep", action="store_true", help="keep the two run directories")

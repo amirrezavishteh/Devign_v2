@@ -55,7 +55,7 @@ def run_ablation(cfg, models, device, epochs=None, project=None, verbose=True):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--models", nargs="+", default=["devign"], choices=["devign", "ggrn"])
+    ap.add_argument("--models", nargs="+", default=["devign"], choices=["devign", "ggrn", "mil"])
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--project", default=None, help="restrict to one project (default: Combined)")
     args = ap.parse_args()
