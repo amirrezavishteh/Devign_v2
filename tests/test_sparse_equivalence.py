@@ -159,19 +159,26 @@ def _free_gpu_bytes() -> int:
     Checking every device rather than the default one matters for the same reason: the config pins
     training to card 1, so a full card 0 must not decide whether card 1's tests run.
     """
+    idx, free = _best_cuda_device()
+    return free
+
+
+def _best_cuda_device() -> tuple[int, int]:
+    """(device index, free bytes) for the emptiest visible GPU, or (-1, 0) if none is usable."""
     try:
         if not torch.cuda.is_available():
-            return 0
-        best = 0
+            return -1, 0
+        best_idx, best_free = -1, 0
         for i in range(torch.cuda.device_count()):
             try:
                 free, _total = torch.cuda.mem_get_info(i)
-                best = max(best, int(free))
             except Exception:
                 continue          # this card is unusable; another one may not be
-        return best
+            if int(free) > best_free:
+                best_idx, best_free = i, int(free)
+        return best_idx, best_free
     except Exception:
-        return 0
+        return -1, 0
 
 
 # This suite runs on a SHARED A100 where co-tenants routinely hold 80 of 82 GB. Without this
@@ -194,11 +201,16 @@ def test_segment_path_is_bitwise_identical_on_cuda(aggregation):
     This is the test that actually justifies the rewrite -- on CUDA, `index_add_` accumulates in
     scheduler order, so the same forward run twice returns different low bits.
     """
+    # Explicitly the card the headroom check passed on. Plain `.cuda()` targets device 0, which
+    # on this shared box is the one that is full -- so the guard would clear on card 1 and the
+    # test would then OOM on card 0, which is exactly what happened.
+    dev_idx, _ = _best_cuda_device()
+    device = f"cuda:{dev_idx}"
     torch.manual_seed(0)
     layer = GatedGraphRecurrentLayer(len(EDGE_TYPES), HIDDEN, time_steps=3,
-                                     aggregation=aggregation).cuda().eval()
+                                     aggregation=aggregation).to(device).eval()
     _, sparse = _batch([64, 128, 96])
-    sparse = sparse.to("cuda")
+    sparse = sparse.to(device)
 
     with torch.no_grad():
         reference = _run_sparse(layer, sparse)
