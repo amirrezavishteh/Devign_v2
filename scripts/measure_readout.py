@@ -35,6 +35,7 @@ import torch.nn as nn
 
 from devign_data.graph_builder import EDGE_TYPES
 from models.conv_module import ConvModule
+from models.mil_pool import GatedAttentionPool
 from models.devign import _Trunk
 from scripts.train import load_graph_loaders
 from training.utils import load_config, resolve_device, seed_from_config
@@ -52,6 +53,17 @@ class _LinearHead(nn.Module):
         m = mask.float().unsqueeze(-1)
         pooled = (node * m).sum(dim=1) / m.sum(dim=1).clamp(min=1.0)
         return self.fc(pooled).squeeze(-1)
+
+
+class _MilPool(nn.Module):
+    """Gated attention MIL pooling (Ilse et al. 2018), wrapped to the common head signature."""
+
+    def __init__(self, hidden_dim: int, init_dim: int, attn_dim: int, heads: int):
+        super().__init__()
+        self.pool = GatedAttentionPool(hidden_dim + init_dim, attn_dim=attn_dim, heads=heads)
+
+    def forward(self, H, x, mask):
+        return self.pool(torch.cat([H, x], dim=-1), mask)
 
 
 class _GgrnSum(nn.Module):
@@ -120,6 +132,7 @@ def measure(cfg: dict, device: str, batch, seed: int) -> list[dict]:
     m = cfg["model"]
     conv_cfg = dict(m["conv"])
     mlp_hidden = conv_cfg["mlp_hidden"]
+    attn_dim = int(m.get("mil_attn_dim", 128))
     pos_rate = float(batch.labels.float().mean())
 
     def conv_factory(affine: bool):
@@ -134,6 +147,11 @@ def measure(cfg: dict, device: str, batch, seed: int) -> list[dict]:
         ("conv_affine_off", conv_factory(False)),
         ("conv_affine_on", conv_factory(True)),
         ("ggrn_sum", lambda h, i: _GgrnSum(h, i, mlp_hidden)),
+        # H3: MIL pooling is linear in the node embeddings, so its gradient should be alive at
+        # initialisation with no affine, no scale and no bias. If this row looks like
+        # conv_affine_off, the implementation is wrong -- debug before training anything.
+        ("mil_k1", lambda h, i: _MilPool(h, i, attn_dim, 1)),
+        ("mil_k4", lambda h, i: _MilPool(h, i, attn_dim, 4)),
         ("linear_head", lambda h, i: _LinearHead(h, i)),
     ]
     rows = [measure_one(n, f, cfg, batch, device, seed) for n, f in variants]
@@ -141,7 +159,7 @@ def measure(cfg: dict, device: str, batch, seed: int) -> list[dict]:
     # These two are the models that actually get TRAINED, measured end to end including their
     # logit affine -- so the finding is about shipped code, not about stand-ins resembling it.
     rows += [measure_full_model(name, cfg, batch, device, seed, pos_rate)
-             for name in ("devign", "ggrn")]
+             for name in ("devign", "ggrn", "mil")]
     return rows
 
 

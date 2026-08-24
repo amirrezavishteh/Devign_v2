@@ -1,10 +1,12 @@
 """Full Devign model and the Ggrn baseline (flat weighted summation, Eq. 5).
 
-Devign  : NodeInit -> GatedGraphRecurrentLayer -> ConvModule -> sigmoid
-Ggrn    : NodeInit -> GatedGraphRecurrentLayer -> SUM(MLP([H, x])) -> sigmoid   (Eq. 5)
+Devign  : NodeInit -> GatedGraphRecurrentLayer -> ConvModule -> sigmoid          (Eq. 6-9)
+Ggrn    : NodeInit -> GatedGraphRecurrentLayer -> SUM(MLP([H, x])) -> sigmoid    (Eq. 5)
+Mil     : NodeInit -> GatedGraphRecurrentLayer -> gated attention pooling -> sigmoid
 
-Both share the embedding + GGNN trunk; they differ only in the readout, which is exactly the
-ablation the paper studies for Q2 ("Conv module vs flat summation").
+All three share the embedding + GGNN trunk and differ only in the readout. The first two are the
+ablation the paper studies for Q2 ("Conv module vs flat summation"); the third turns that binary
+into a real comparison against an operator whose gradient is not degenerate at initialisation.
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import torch.nn as nn
 from devign_data.dataset import GraphBatch
 from models.conv_module import ConvModule, prior_logit
 from models.ggnn import GatedGraphRecurrentLayer
+from models.mil_pool import GatedAttentionPool
 from models.node_init import NodeInitEmbedding
 
 
@@ -56,6 +59,40 @@ class DevignModel(nn.Module):
     def forward(self, batch: GraphBatch) -> torch.Tensor:
         H, x = self.trunk(batch)
         return self.conv(H, x, batch.mask)  # logits [B]
+
+
+class MilModel(nn.Module):
+    """NodeInit -> GGNN trunk -> gated attention MIL pooling -> sigmoid.
+
+    Identical trunk to DevignModel and GgrnModel, so a three-way comparison isolates the readout:
+    `conv` (Eq. 9), `sum` (Eq. 5) and `mil` differ in nothing else. The attention input is
+    concat(H, x) -- the same [H, x] the Conv module's Z branch consumes -- for the same reason.
+
+    No logit affine. That is the point of H3: MIL pooling is linear in the node embeddings, so it
+    should have a live gradient at initialisation with no rescue term. Adding one here would make
+    the hypothesis untestable.
+    """
+
+    def __init__(self, code_dim: int, type_vocab_size: int, type_dim: int,
+                 num_edge_types: int, hidden_dim: int, time_steps: int,
+                 aggregation: str, dropout: float, attn_dim: int = 128, heads: int = 1,
+                 type_init_std: float = 1.0):
+        super().__init__()
+        self.trunk = _Trunk(code_dim, type_vocab_size, type_dim, num_edge_types,
+                            hidden_dim, time_steps, aggregation, type_init_std)
+        self.pool = GatedAttentionPool(hidden_dim + self.trunk.init_dim,
+                                       attn_dim=attn_dim, heads=heads, dropout=dropout)
+
+    def forward(self, batch: GraphBatch, return_attention: bool = False):
+        H, x = self.trunk(batch)
+        node_repr = torch.cat([H, x], dim=-1)              # [B, M, z+d]
+        return self.pool(node_repr, batch.mask, return_attention=return_attention)
+
+    @torch.no_grad()
+    def attention(self, batch: GraphBatch) -> torch.Tensor:
+        """Per-node attention [B, heads, M] for localisation. Padded nodes are exactly 0."""
+        H, x = self.trunk(batch)
+        return self.pool.attention(torch.cat([H, x], dim=-1), batch.mask)
 
 
 class GgrnModel(nn.Module):
@@ -125,6 +162,15 @@ def build_model(name: str, cfg: dict, code_dim: int, type_vocab_size: int,
             time_steps=m["time_steps"], aggregation=m["aggregation"],
             conv_cfg=m["conv"], mlp_hidden=m["conv"]["mlp_hidden"], dropout=m["dropout"],
             pos_rate=pos_rate, type_init_std=emb.get("type_init_std", 1.0),
+        )
+    if name == "mil":
+        conv = m["conv"]
+        return MilModel(
+            code_dim=code_dim, type_vocab_size=type_vocab_size, type_dim=emb["type_dim"],
+            num_edge_types=num_edge_types, hidden_dim=m["hidden_dim"],
+            time_steps=m["time_steps"], aggregation=m["aggregation"], dropout=m["dropout"],
+            attn_dim=int(m.get("mil_attn_dim", 128)), heads=int(m.get("mil_heads", 1)),
+            type_init_std=emb.get("type_init_std", 1.0),
         )
     if name == "ggrn":
         return GgrnModel(
