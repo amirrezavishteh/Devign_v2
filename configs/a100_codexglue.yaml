@@ -1,0 +1,18 @@
+# A100 + the CodeXGLUE released split. PRIMARY protocol for Phase 1.
+#
+# This is NOT the paper's Sec 3.3 configuration (the paper shuffles and re-splits). What it buys
+# is comparability: every published number on this dataset is measured on this exact partition,
+# so results can be read against the leaderboard rather than only against our own re-split. It
+# also yields roughly 26% more training data than a random 75/25.
+extends: ../config_a100.yaml
+
+data:
+  split_by: codexglue
+  # codexglue REQUIRES a split-preserving source, i.e. the three parquet files on disk. The
+  # HuggingFace download path does not carry split labels through.
+  # Point this at wherever the parquets live on the server.
+  real_data_path: data/codexglue
+  # Each split protocol gets its OWN processed_dir. They all write train/val/test.pkl, so sharing
+  # one directory means preparing the second protocol silently overwrites the first and every
+  # later run trains on whichever was prepared last -- with nothing in the logs to say so.
+  processed_dir: data/processed_codexglue

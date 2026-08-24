@@ -1,0 +1,14 @@
+# A100 + a random stratified 75/12.5/12.5 split. SECONDARY protocol for Phase 1.
+#
+# Closest to the paper's Sec 3.3 protocol (which shuffles and re-splits 75/25) while still
+# holding out a test set the model never sees. The paper has no test split; we halve its 25% so
+# the reported number is unbiased rather than tuned-on-what-it-reports.
+extends: ../config_a100.yaml
+
+data:
+  split_by: random
+  real_data_path: data/codexglue     # same parquet files; the split labels are simply ignored
+  processed_dir: data/processed_random
+  train_split: 0.75
+  val_split: 0.125
+  test_split: 0.125

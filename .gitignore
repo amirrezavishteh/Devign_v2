@@ -43,3 +43,8 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Per-protocol processed splits (see configs/a100_*.yaml). Each split protocol gets its own
+# directory so preparing one cannot clobber another.
+data/processed_*/
+data/codexglue/
