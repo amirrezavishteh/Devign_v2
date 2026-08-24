@@ -148,7 +148,26 @@ def test_padded_nodes_never_receive_messages():
     assert h[pad].abs().max() == 0.0
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def _free_gpu_bytes() -> int:
+    if not torch.cuda.is_available():
+        return 0
+    free, _total = torch.cuda.mem_get_info()
+    return free
+
+
+# This suite runs on a SHARED A100 where co-tenants routinely hold 80 of 82 GB. Without this
+# guard the CUDA tests below fail with a plain `CUDA error: out of memory` and look exactly like a
+# determinism regression -- which is how they were first misread. A test that goes red because
+# somebody else filled the card is a false alarm, and false alarms are how real red gets ignored.
+_MIN_FREE_BYTES = 2 * 1024 ** 3
+
+requires_gpu_headroom = pytest.mark.skipif(
+    not torch.cuda.is_available() or _free_gpu_bytes() < _MIN_FREE_BYTES,
+    reason=(f"needs CUDA with >= {_MIN_FREE_BYTES // 1024 ** 3} GB free "
+            f"(free now: {_free_gpu_bytes() // 1024 ** 2} MiB)"))
+
+
+@requires_gpu_headroom
 @pytest.mark.parametrize("aggregation", ["sum", "concat"])
 def test_segment_path_is_bitwise_identical_on_cuda(aggregation):
     """The CPU identity test above cannot catch this: atomics are only reordered on GPU.
