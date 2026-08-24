@@ -23,7 +23,6 @@ import argparse
 import glob
 import json
 import os
-from itertools import combinations
 
 import numpy as np
 
@@ -107,7 +106,7 @@ def _fmt(agg: dict) -> str:
         return "not measured"
     if agg.get("std") is None:
         return f"{agg['mean']:.2f} (1 seed)"
-    return f"{agg["mean"]:.2f} +/- {agg["std"]:.2f}"
+    return "%.2f +/- %.2f" % (agg["mean"], agg["std"])
 
 
 def report(arms: dict, split_key: str, baseline_key: str) -> dict:
