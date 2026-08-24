@@ -56,9 +56,37 @@ def _fmt(agg: dict) -> str:
     return f"{agg['mean']:.2f} +/- {agg['std']:.2f}"
 
 
+def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
+    """Apply `--set a.b.c=value` overrides onto a loaded config, in place.
+
+    Exists so a one-knob sweep (T in {4, 6, 8, 12}) does not need four near-identical config files
+    that then drift apart. Values are parsed as YAML, so `8` is an int and `true` is a bool rather
+    than the strings they would otherwise be. Overrides land in the config BEFORE the manifest is
+    built, so the run records what actually ran rather than the file it started from.
+    """
+    import yaml as _yaml
+
+    for item in overrides or []:
+        if "=" not in item:
+            raise SystemExit(f"--set expects key.path=value, got {item!r}")
+        dotted, raw = item.split("=", 1)
+        parts = dotted.strip().split(".")
+        node = cfg
+        for key in parts[:-1]:
+            if not isinstance(node.get(key), dict):
+                raise SystemExit(f"--set {dotted}: {key!r} is not a config section")
+            node = node[key]
+        if parts[-1] not in node:
+            raise SystemExit(
+                f"--set {dotted}: no such key. Refusing to invent one -- a typo here would "
+                f"silently run the default and report it as the swept value.")
+        node[parts[-1]] = _yaml.safe_load(raw)
+    return cfg
+
+
 def run(cfg_path: str, model_name: str, seeds: list[int], project: str | None,
-        epochs: int | None, out_path: str | None) -> dict:
-    base_cfg = load_config(cfg_path)
+        epochs: int | None, out_path: str | None, overrides: list[str] | None = None) -> dict:
+    base_cfg = apply_overrides(load_config(cfg_path), overrides or [])
     device = resolve_device_from_config(base_cfg)
 
     val_rows, test_rows, manifests, thresholds = [], [], [], []
@@ -110,7 +138,9 @@ def run(cfg_path: str, model_name: str, seeds: list[int], project: str | None,
         "model": model_name,
         "project": project or "combined",
         "config": cfg_path,
+        "overrides": overrides or [],
         "split_protocol": base_cfg["data"].get("split_by"),
+        "time_steps": base_cfg["model"]["time_steps"],
         "seeds": seeds,
         "epochs_override": epochs,
         "threshold_per_seed": thresholds,
@@ -149,6 +179,9 @@ def main():
     ap.add_argument("--project", default=None)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--out", default=None, help="write the summary JSON here")
+    ap.add_argument("--set", dest="overrides", action="append", default=[],
+                    metavar="a.b.c=value",
+                    help="override a config key, e.g. --set model.time_steps=8")
     args = ap.parse_args()
 
     if len(args.seeds) < 3:
@@ -158,7 +191,7 @@ def main():
     out = args.out or os.path.join(
         "artifacts", "seeds",
         f"{args.model}_{args.project or 'combined'}_{os.path.basename(args.config)}.json")
-    run(args.config, args.model, args.seeds, args.project, args.epochs, out)
+    run(args.config, args.model, args.seeds, args.project, args.epochs, out, args.overrides)
 
 
 if __name__ == "__main__":

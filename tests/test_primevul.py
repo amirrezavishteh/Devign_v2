@@ -91,6 +91,8 @@ def test_loads_paired_records_and_derives_lines(tmp_path):
     assert fn.vulnerable_lines == {3}
     assert fn.cwe == ["CWE-787"] and fn.commit_id == "deadbeef"
     assert fn.target == 1 and fn.n_lines == 7
+    # The patched half is kept so the renderer can show the diff that defines the labels.
+    assert fn.func_after == AFTER
 
 
 def test_functions_fixed_only_by_insertion_are_dropped_not_counted_as_failures(tmp_path):

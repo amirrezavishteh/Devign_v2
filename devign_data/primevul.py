@@ -36,6 +36,10 @@ class VulnFunction:
     func: str
     target: int
     vulnerable_lines: set[int] = field(default_factory=set)   # 1-based
+    # The patched source. Kept so the qualitative renderer can show the diff that DEFINES the
+    # ground truth beside the attention map -- a reader should be able to check the labels, not
+    # just the prediction.
+    func_after: str = ""
     project: str = "primevul"
     cwe: list[str] = field(default_factory=list)
     commit_id: str = ""
@@ -110,7 +114,7 @@ def load_primevul_paired(path: str, max_functions: int | None = None) -> list[Vu
             return
         out.append(VulnFunction(
             name=str(vuln.get("idx", vuln.get("id", len(out)))),
-            func=src, target=1, vulnerable_lines=lines,
+            func=src, target=1, vulnerable_lines=lines, func_after=patched_src,
             cwe=_cwes(vuln), commit_id=str(vuln.get("commit_id", "")),
             project=str(vuln.get("project", "primevul")),
         ))
