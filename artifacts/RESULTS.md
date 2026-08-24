@@ -159,9 +159,36 @@ Under the paper's literal reading, internal AST nodes carry Type only. With `tim
 against a median AST depth of 11, the upper half of a typical tree never receives a token vector
 from anywhere — it is not that the information arrives late, it is that it does not arrive.
 
-### Detection numbers — *not measured*
+### Detection numbers
 
-Awaiting the sweep.
+Devign, CodeXGLUE split, 3 seeds each, held-out test at the tuned threshold. `paper_faithful`
+does no threshold tuning (all three seeds sit at 0.500, as the paper does).
+
+| metric | `paper_faithful` | `repo_default` | delta | majority |
+|---|---|---|---|---|
+| accuracy | 57.90 ± 0.74 | **62.76 ± 1.43** | −4.86 | 56.05 |
+| F1 | **58.36 ± 0.23** | 57.56 ± 2.57 | **+0.80** | 0.00 |
+| precision | 51.63 ± 0.69 | **57.69 ± 1.78** | −6.06 | 0.00 |
+| recall | **67.11 ± 0.55** | 57.60 ± 5.01 | +9.51 | 0.00 |
+| ROC-AUC | 63.30 ± 0.79 | **68.67 ± 1.54** | −5.36 | 50.00 |
+| PR-AUC | 55.96 ± 1.13 | **63.15 ± 1.95** | −7.19 | 43.95 |
+
+**The paper's configuration scores HIGHER F1 while being a worse classifier.** That is the whole
+argument for not selecting on F1@0.5, made visible: `paper_faithful` gains 9.51 points of recall
+and loses 6.06 of precision — it over-predicts the positive class. F1 rewards that trade; accuracy
+(−4.86), ROC-AUC (−5.36) and PR-AUC (−7.19) all say the ranking is genuinely worse.
+
+ROC-AUC is the honest summary because it is threshold-free and a constant predictor scores exactly
+50 no matter what constant it emits. On that measure the paper's configuration is **5.36 points
+worse**, and its accuracy of 57.90 clears the 56.05 majority-class floor by under two points.
+
+This is a compound of six reversed deviations (no logit affine, lr 1e-4, no schedule, F1
+selection, no threshold tuning, `internal_code: zero`, feature-axis convolution, max-node readout),
+so it does not attribute the effect to any one of them. `configs/a100_conv_affine_off.yaml`
+isolates the affine term alone and runs in Phase 3.
+
+The dead start is visible in the training curve: `paper_faithful` begins at probability spread
+**0.062** and F1 **0.00** at epoch 1, against `repo_default`'s 0.440 and 6.24.
 
 ## 4. Random vs commit-disjoint leakage gap — *not measured*
 
