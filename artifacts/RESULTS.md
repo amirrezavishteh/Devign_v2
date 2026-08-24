@@ -91,7 +91,28 @@ Awaiting the seed sweeps. Will report accuracy and F1 at threshold 0.5 (the only
 comparable to the paper), F1 at the validation-tuned threshold, ROC-AUC, PR-AUC, and the
 majority-class baseline, as mean ± std over ≥3 seeds.
 
-## 3. `paper_faithful` vs `repo_default` — *not measured*
+## 3. `paper_faithful` vs `repo_default`
+
+### Data is identical; only the features differ
+
+Both arms are prepared from the same functions and land on identical splits
+(16,536 / 2,071 / 2,050), so any delta is attributable to the configuration rather than the data.
+
+What `embedding.internal_code: zero` does, measured on the same function (id 13111, 172 nodes) in
+both prepared splits:
+
+| arm | nodes with an all-zero code half | mean abs code value |
+|---|---|---|
+| `repo_default` (`mean_standardized`) | 0.0% | 0.724 |
+| `paper_faithful` (`zero`) | **44.2%** | 0.193 |
+
+Under the paper's literal reading, internal AST nodes carry Type only. With `time_steps: 6`
+against a median AST depth of 11, the upper half of a typical tree never receives a token vector
+from anywhere — it is not that the information arrives late, it is that it does not arrive.
+
+### Detection numbers — *not measured*
+
+Awaiting the sweep.
 
 ## 4. Random vs commit-disjoint leakage gap — *not measured*
 
