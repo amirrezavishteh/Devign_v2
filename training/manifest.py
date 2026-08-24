@@ -68,7 +68,7 @@ _NON_SEMANTIC_KEYS = {
 }
 
 
-def config_hash(cfg: dict) -> str:
+def config_hash(cfg: dict, ignore_seed: bool = False) -> str:
     """Digest of the FULLY RESOLVED config, i.e. after `extends:` merging.
 
     Hashing the file on disk would miss the thing that actually bit this project before: a
@@ -81,6 +81,8 @@ def config_hash(cfg: dict) -> str:
     for section, key in _NON_SEMANTIC_KEYS:
         if isinstance(trimmed.get(section), dict):
             trimmed[section].pop(key, None)
+    if ignore_seed and isinstance(trimmed.get("project"), dict):
+        trimmed["project"].pop("seed", None)
     canonical = json.dumps(trimmed, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -116,6 +118,10 @@ def build_manifest(cfg: dict, seed: int, device: str, splits: dict | None = None
     return {
         "git": git_state(),
         "config_sha256": config_hash(cfg),
+        # The same config with the seed factored out. A seed sweep varies `seed` deliberately, so
+        # comparing full hashes would flag every sweep as "different experiments" and train people
+        # to ignore the warning -- which is how a genuinely mismatched run gets pooled in later.
+        "config_sha256_seedless": config_hash(cfg, ignore_seed=True),
         "seed": seed,
         "device": device,
         "python": sys.version.split()[0],
@@ -137,8 +143,13 @@ def build_manifest(cfg: dict, seed: int, device: str, splits: dict | None = None
     }
 
 
-def compare_manifests(a: dict, b: dict) -> list[str]:
-    """Reasons two runs are NOT comparable. Empty list means they are."""
+def compare_manifests(a: dict, b: dict, allow_seed_difference: bool = False) -> list[str]:
+    """Reasons two runs are NOT comparable. Empty list means they are.
+
+    `allow_seed_difference` is for seed sweeps, where the seed is the one thing intended to vary.
+    Everything else -- splits, config, commit -- must still match, so a sweep that accidentally
+    changed the data or a hyperparameter is still caught.
+    """
     problems = []
     for name, spec in a.get("splits", {}).items():
         other = b.get("splits", {}).get(name)
@@ -146,7 +157,11 @@ def compare_manifests(a: dict, b: dict) -> list[str]:
             problems.append(f"split {name!r} present in one run, absent in the other")
         elif other["hash"] != spec["hash"]:
             problems.append(f"split {name!r} differs: {spec['hash'][:12]} vs {other['hash'][:12]}")
-    if a.get("config_sha256") != b.get("config_sha256"):
+    if allow_seed_difference:
+        key = "config_sha256_seedless"
+        if a.get(key) and b.get(key) and a[key] != b[key]:
+            problems.append("resolved config differs (beyond the seed)")
+    elif a.get("config_sha256") != b.get("config_sha256"):
         problems.append("resolved config differs")
     if a.get("git", {}).get("sha") != b.get("git", {}).get("sha"):
         problems.append("git commit differs")
