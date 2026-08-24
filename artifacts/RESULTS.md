@@ -214,20 +214,40 @@ rather than the flaw.
 This applies to the **released partition**, which is the split every published number on this
 dataset is measured on.
 
-### What closing it costs — *partial*
+### What closing it costs
 
-Devign on the commit-disjoint split, training in progress at time of writing:
+Devign trained on the commit-disjoint split, same architecture, same data, same code, same
+hyperparameters. Validation at the fixed 0.5 threshold, against the 3-seed CodeXGLUE mean:
 
-| | CodeXGLUE split | commit-disjoint |
-|---|---|---|
-| best val ROC-AUC | 70.83 ± 0.21 | **54.64** (in progress) |
+| metric | commit-disjoint | CodeXGLUE (3 seeds) | gap | majority on that split |
+|---|---|---|---|---|
+| accuracy | **50.73** | 64.69 ± 0.42 | **+13.96** | 50.00 |
+| F1 | **18.26** | 55.86 ± 2.12 | **+37.60** | 0.00 |
+| precision | 53.56 | 58.15 ± 1.35 | +4.59 | 0.00 |
+| recall | **11.01** | 53.99 ± 5.22 | **+42.98** | 0.00 |
+| ROC-AUC | **54.64** | 70.83 ± 0.21 | **+16.19** | 50.00 |
+| PR-AUC | 53.20 | 63.11 ± 0.49 | +9.91 | 50.00 |
 
-A ROC-AUC of 54.64 is 4.6 points above chance. On the released split the same architecture, data
-and code reach 70.83. **The gap is roughly 16 AUC points**, and it is the clearest single statement
-this reproduction can make about what the benchmark measures.
+The commit-disjoint validation split is exactly 50.00% positive (1,299 of 2,598), so:
 
-Final numbers, with the gap computed against the 3-seed mean rather than a single run, land here
-when the run completes.
+- accuracy **50.73** beats the majority-class baseline by **+0.73 points**
+- ROC-AUC **54.64** is **4.64 points above chance**
+
+**Once no fix commit contributes functions to both sides, the model is barely better than
+guessing.** Roughly 16 ROC-AUC points and 38 F1 points of this reproduction's headline numbers —
+and, by the same mechanism, of every published number on this dataset — are attributable to
+commit membership rather than to learned vulnerability semantics.
+
+**Caveats, stated precisely.** The commit-disjoint figure is **one seed** against a 3-seed mean;
+the gap (16.19 AUC) is nearly 80× the CodeXGLUE seed spread (±0.21), so it is not seed noise, but
+it is not itself a mean and is not reported as one. The commit-disjoint split is also a different
+partition of a differently-sized training set (20,443 vs 21,808), so a small part of the gap is
+less training data rather than less leakage. Neither caveat changes the direction or the order of
+magnitude.
+
+This does not make the paper wrong about its own protocol — Sec 3.3 splits randomly and says so.
+It means the benchmark, as constituted, rewards commit recognition, and a reproduction that does
+not report this is reporting a number it does not understand.
 
 ## 5. Training curves — partially available
 
