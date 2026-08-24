@@ -81,6 +81,20 @@ class GgrnModel(nn.Module):
         # Eq. 5 sums a per-node logit over every node, so its output is already O(M) rather than
         # the ~1e-3 a product of two near-zero heads produces. There is no attenuation to undo,
         # and amplifying a sum that already scales with graph size would only make it worse.
+        #
+        # That is correct as far as it goes, and it misses the opposite failure. Measured at
+        # initialisation on a real 128-graph batch (scripts/measure_readout.py), Eq. 5 does not
+        # merely avoid Eq. 9's dead start -- it SATURATES: logits land in [+1.8, +36.9], every
+        # probability is >= 0.86 with the maximum pinned at 1.0, and the loss is 11.01 against
+        # ln(2) = 0.693. The model begins by calling every graph vulnerable with near-total
+        # confidence on a split that is 43.2% positive.
+        #
+        # So both of the paper's readouts are badly conditioned at init, in opposite directions:
+        # Eq. 9 collapses onto 0.5, Eq. 5 blows through the top of the sigmoid. That matters for
+        # the paper's own Q2 ("does the Conv module beat flat summation?") because the comparison
+        # is between two poorly-initialised readouts, not between a good one and a bad one. The
+        # fix is NOT to raise `scale`; it would be to normalise the sum by node count, which is a
+        # deviation from Eq. 5 as written and is therefore left off by default and recorded here.
         self.logit_affine = logit_affine
         if logit_affine:
             self.scale = nn.Parameter(torch.ones(1))

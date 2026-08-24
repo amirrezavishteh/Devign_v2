@@ -136,29 +136,67 @@ def measure(cfg: dict, device: str, batch, seed: int) -> list[dict]:
         ("ggrn_sum", lambda h, i: _GgrnSum(h, i, mlp_hidden)),
         ("linear_head", lambda h, i: _LinearHead(h, i)),
     ]
-    return [measure_one(n, f, cfg, batch, device, seed) for n, f in variants]
+    rows = [measure_one(n, f, cfg, batch, device, seed) for n, f in variants]
+    # The rows above isolate the readout on a shared trunk, which is the controlled comparison.
+    # These two are the models that actually get TRAINED, measured end to end including their
+    # logit affine -- so the finding is about shipped code, not about stand-ins resembling it.
+    rows += [measure_full_model(name, cfg, batch, device, seed, pos_rate)
+             for name in ("devign", "ggrn")]
+    return rows
+
+
+def measure_full_model(name: str, cfg: dict, batch, device: str, seed: int,
+                       pos_rate: float) -> dict:
+    """Same diagnostics on the real `build_model` output, affine and all."""
+    from models.devign import build_model
+
+    seed_from_config(cfg, seed)
+    model = build_model(name, cfg, code_dim=cfg["embedding"]["word2vec_dim"],
+                        type_vocab_size=int(batch.type_ids.max()) + 1,
+                        num_edge_types=len(EDGE_TYPES), pos_rate=pos_rate).to(device)
+    model.train()
+    model.zero_grad(set_to_none=True)
+    logits = model(batch)
+    loss = nn.functional.binary_cross_entropy_with_logits(logits, batch.labels.to(device).float())
+    loss.backward()
+    with torch.no_grad():
+        probs = torch.sigmoid(logits)
+    return {
+        "readout": f"{name} (full)",
+        "logit_min": float(logits.min()), "logit_max": float(logits.max()),
+        "logit_range": float(logits.max() - logits.min()),
+        "prob_min": float(probs.min()), "prob_max": float(probs.max()),
+        "prob_spread": float(probs.max() - probs.min()),
+        "loss": float(loss),
+        "trunk_grad_norm": _trunk_grad_norm(model.trunk),
+    }
 
 
 def report(rows: list[dict]) -> None:
     ref = next((r for r in rows if r["readout"] == "linear_head"), None)
-    print(f"\n{'readout':<18} {'logit range':>13} {'prob spread':>13} "
-          f"{'trunk ||grad||':>15} {'vs linear':>13}")
-    print("-" * 76)
+    print()
+    print(f"{'readout':<20} {'logit range':>12} {'prob spread':>12} "
+          f"{'loss':>9} {'trunk ||grad||':>15} {'vs linear':>14}")
+    print("-" * 87)
     for r in rows:
         ratio = ""
         if ref and r["trunk_grad_norm"] > 0:
-            # Relative to the linear control. Eq. 5's sum runs STRONGER than the control (it adds
-            # a per-node logit over every node, so it scales with graph size), and printing that
-            # as "0.0x weaker" inverted the finding -- say which direction it goes.
+            # Relative to the linear control, WITH a direction. Eq. 5 runs stronger than the
+            # control because it sums an unnormalised per-node logit over every node, so it
+            # grows with graph size; printing that as "0.0x weaker" inverted the finding.
+            # "Stronger" here is not health -- read it beside the loss column.
             factor = ref["trunk_grad_norm"] / r["trunk_grad_norm"]
             ratio = (f"{factor:.1f}x weaker" if factor >= 1.0
                      else f"{1.0 / factor:.1f}x stronger")
         if r["readout"] == "linear_head":
             ratio = "(reference)"
-        print(f"{r['readout']:<18} {r['logit_range']:>13.3e} {r['prob_spread']:>13.3e} "
-              f"{r['trunk_grad_norm']:>15.3e} {ratio:>13}")
+        print(f"{r['readout']:<20} {r['logit_range']:>12.3e} {r['prob_spread']:>12.3e} "
+              f"{r['loss']:>9.4f} {r['trunk_grad_norm']:>15.3e} {ratio:>14}")
     print()
-
+    print("  loss reference: ln(2) = 0.6931 is what a model at chance scores.")
+    print("  Far ABOVE it at init means the readout is SATURATED, not learning fast -- a big")
+    print("  trunk gradient out of a saturated sigmoid is an exploding start, not a healthy one.")
+    print()
 
 def main():
     ap = argparse.ArgumentParser()
