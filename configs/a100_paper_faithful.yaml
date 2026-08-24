@@ -1,0 +1,42 @@
+# Devign exactly as the paper specifies it, on the CodeXGLUE split. This WILL train badly.
+#
+# That is the point. Every deviation this repo carries was introduced to work around a defect, and
+# a reader is entitled to see the defect rather than take the workaround on trust. This config is
+# the evidence: it is the arm the Eq. 9 finding is argued from, and its poor numbers are a result,
+# not an embarrassment.
+#
+# Each override below reverses one deviation listed in the audit. Nothing else changes, so the
+# delta against configs/a100_codexglue.yaml is attributable to exactly these knobs.
+extends: ../config_a100.yaml
+
+data:
+  split_by: codexglue
+  real_data_path: data/codexglue
+  # Shares the prepared graphs with the repo-default arm ONLY IF the embedding settings match.
+  # They do not -- internal_code differs below, which changes every node feature -- so this arm
+  # gets its own processed_dir and its own prepare run.
+  processed_dir: data/processed_paper_faithful
+
+embedding:
+  # Paper does not specify how non-leaf AST nodes get a Code feature; Fig. 2 shows only the source
+  # span. `zero` is the literal reading: leaves carry their token vector, internal nodes carry Type
+  # only. Measured consequence: 49.6% of all nodes end up with an all-zero code half.
+  internal_code: zero
+  oov_code: zero
+  # Against raw word2vec (per-dim std ~0.2-0.6) a std-1.0 Type embedding dominates x_v early, so
+  # the paper-faithful arm uses the value that keeps the two halves comparable.
+  type_init_std: 0.4
+
+model:
+  conv:
+    logit_affine: false        # Eq. 9 has no scale and no bias
+    logit_scale_init: 1.0
+    conv_axis: features        # Sec 2.4's filters read as sliding along the feature axis
+    readout: max_nodes         # avg_nodes requires conv_axis: nodes, so it is unavailable here
+
+training:
+  lr: 0.0001                   # Sec 3.3
+  lr_schedule: none            # Sec 3.3 fixes the LR for the whole run
+  monitor: f1                  # the paper reports F1@0.5 and implies selection on it
+  tune_threshold: false        # no threshold tuning anywhere in the paper
+  threshold_objective: f1
