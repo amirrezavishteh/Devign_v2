@@ -151,10 +151,34 @@ def loader_generator(seed: int) -> torch.Generator:
     return g
 
 
-def resolve_device(requested: str) -> str:
-    if requested == "cuda" and torch.cuda.is_available():
+def resolve_device(requested: str, index: int | None = None) -> str:
+    """Resolve `project.device` to a concrete torch device string.
+
+    `index` pins a specific GPU, e.g. `project.cuda_device: 1` -> "cuda:1". This is preferred over
+    exporting CUDA_VISIBLE_DEVICES because it is recorded in the config, and therefore in the run
+    manifest, rather than living in whichever shell happened to launch the job. On a shared box
+    where one card is routinely full, "which GPU did this run use" is part of the run's identity.
+
+    Falls back to cpu if CUDA is unavailable, and to the default device if the requested index
+    does not exist -- with a warning, because silently training on a different card than asked for
+    is exactly the kind of thing that shows up later as unexplained variance.
+    """
+    if requested != "cuda" or not torch.cuda.is_available():
+        return "cpu"
+    if index is None:
         return "cuda"
-    return "cpu"
+    n = torch.cuda.device_count()
+    if not (0 <= index < n):
+        print(f"[utils] project.cuda_device={index} but only {n} CUDA device(s) visible; "
+              f"falling back to cuda:0")
+        return "cuda:0"
+    return f"cuda:{index}"
+
+
+def resolve_device_from_config(cfg: dict) -> str:
+    """`project.device` + optional `project.cuda_device`, in one call."""
+    project = cfg.get("project", {})
+    return resolve_device(project.get("device", "cuda"), project.get("cuda_device"))
 
 
 def ensure_dir(path: str) -> str:

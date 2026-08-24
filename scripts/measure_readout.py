@@ -38,7 +38,7 @@ from models.conv_module import ConvModule
 from models.mil_pool import GatedAttentionPool
 from models.devign import _Trunk
 from scripts.train import load_graph_loaders
-from training.utils import load_config, resolve_device, seed_from_config
+from training.utils import load_config, resolve_device_from_config, seed_from_config
 
 
 class _LinearHead(nn.Module):
@@ -225,7 +225,7 @@ def main():
 
     cfg = load_config(args.config)
     seed = args.seed if args.seed is not None else cfg["project"]["seed"]
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     seed_from_config(cfg, seed)
 
     _, _, train_loader, _ = load_graph_loaders(cfg, EDGE_TYPES)

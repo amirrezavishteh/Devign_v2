@@ -25,7 +25,7 @@ from scripts.train import (artifact_dir, load_test_loader, save_graph_model,
                            train_graph_model)
 from training.manifest import compare_manifests
 from training.metrics import majority_baseline, require_unbiased
-from training.utils import load_config, resolve_device, seed_from_config
+from training.utils import load_config, resolve_device_from_config, seed_from_config
 
 # Reported for every cell. accuracy/f1 are the paper's two columns; auc/pr_auc are threshold-free
 # and are what model selection actually keys on.
@@ -59,7 +59,7 @@ def _fmt(agg: dict) -> str:
 def run(cfg_path: str, model_name: str, seeds: list[int], project: str | None,
         epochs: int | None, out_path: str | None) -> dict:
     base_cfg = load_config(cfg_path)
-    device = resolve_device(base_cfg["project"]["device"])
+    device = resolve_device_from_config(base_cfg)
 
     val_rows, test_rows, manifests, thresholds = [], [], [], []
     for seed in seeds:

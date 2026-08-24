@@ -16,7 +16,7 @@ from evaluation.report import format_ablation
 from models.devign import build_model
 from scripts.train import load_graph_loaders
 from training.trainer import make_train_config, train_model
-from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
+from training.utils import ensure_dir, load_config, resolve_device_from_config, seed_from_config
 
 # Single artifact path for this study, also used by scripts.reproduce so the two entry points
 # never disagree on where the composite/ablation results live.
@@ -61,7 +61,7 @@ def main():
     args = ap.parse_args()
     cfg = load_config(args.config)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
 
     results = run_ablation(cfg, args.models, device, epochs=args.epochs, project=args.project)
 

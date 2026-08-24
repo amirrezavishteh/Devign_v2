@@ -26,7 +26,7 @@ from devign_data.prepare import prepare
 from models.devign import build_model
 from scripts.train import artifact_dir, load_graph_loaders
 from training.trainer import evaluate, make_train_config, train_model
-from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
+from training.utils import ensure_dir, load_config, resolve_device_from_config, seed_from_config
 
 
 def _leakage_config(cfg: dict) -> dict:
@@ -58,7 +58,7 @@ def main():
     base_cfg = load_config(args.config)
     cfg = _leakage_config(base_cfg)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
 
     train_path = os.path.join(cfg["data"]["processed_dir"], "train.pkl")
     if args.force_prepare or not os.path.exists(train_path):

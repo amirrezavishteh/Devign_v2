@@ -23,8 +23,8 @@ from models.devign import build_model
 from training.manifest import build_manifest
 from training.metrics import require_unbiased
 from training.trainer import evaluate, make_train_config, train_model
-from training.utils import (ensure_dir, load_config, loader_generator, resolve_device,
-                            seed_from_config, seed_worker)
+from training.utils import (ensure_dir, load_config, loader_generator,
+                            resolve_device_from_config, seed_from_config, seed_worker)
 
 
 def make_collate_from_cfg(cfg, edge_types):
@@ -195,7 +195,7 @@ def main():
 
     cfg = load_config(args.config)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     print(f"[train] model={args.model} project={args.project or 'combined'} device={device}")
 
     model, metrics, train_ds = train_graph_model(

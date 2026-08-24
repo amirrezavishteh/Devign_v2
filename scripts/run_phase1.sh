@@ -9,7 +9,9 @@ cd "$(dirname "$0")/.."
 # log stays empty until the process exits, which makes a running job indistinguishable from a
 # hung one.
 PY="${PY:-/media/external20/amirreza_vishteh/anaconda3/envs/devigen/bin/python}"
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+# GPU selection lives in config_a100.yaml (`project.cuda_device: 1`), NOT here. Setting
+# CUDA_VISIBLE_DEVICES as well would remap the indices underneath that setting, so the config
+# would be describing a card it is not actually using -- and the manifest would record the lie.
 
 # Wait for anything already training to finish.
 while pgrep -u "$USER" -f "scripts.run_seeds" >/dev/null; do sleep 60; done

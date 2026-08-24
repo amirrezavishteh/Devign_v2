@@ -23,7 +23,7 @@ from evaluation.imbalanced import (evaluate_devign_imbalanced,
 from evaluation.report import format_table3
 from models.devign import build_model
 from scripts.train import artifact_dir
-from training.utils import load_config, resolve_device, seed_from_config
+from training.utils import load_config, resolve_device_from_config, seed_from_config
 
 
 def main():
@@ -34,7 +34,7 @@ def main():
     args = ap.parse_args()
     cfg = load_config(args.config)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     proc = cfg["data"]["processed_dir"]
 
     with open(os.path.join(proc, "splits.pkl"), "rb") as f:

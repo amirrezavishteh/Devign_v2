@@ -23,7 +23,7 @@ import tempfile
 from devign_data.graph_builder import EDGE_TYPES
 from scripts.train import save_graph_model, train_graph_model
 from training.manifest import compare_manifests
-from training.utils import load_config, resolve_device, seed_from_config
+from training.utils import load_config, resolve_device_from_config, seed_from_config
 
 
 def _sha256(path: str) -> str:
@@ -54,7 +54,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     print(f"[determinism] model={args.model} device={device} epochs={args.epochs} "
           f"seed={cfg['project']['seed']}")
 

@@ -12,6 +12,12 @@ dataset:
   max_nodes_per_batch: 24000
 
 project:
+  # This box has two A100s and card 0 is routinely held at ~80 of 82 GB by other users, which
+  # produced a bare `CUDA error: out of memory` that first read as a determinism regression.
+  # Pinned here rather than exported as CUDA_VISIBLE_DEVICES so it lands in the config hash and
+  # therefore in every run manifest: on a shared box, which card a run used is part of its
+  # identity, not a property of the shell that launched it.
+  cuda_device: 1
   # Deliberately NOT overridden to true, even though the A100 would be meaningfully faster with
   # TF32 on. The laptop this repo is developed on and this server would then compute different
   # arithmetic for identical code and seed, and every local check would stop predicting what the

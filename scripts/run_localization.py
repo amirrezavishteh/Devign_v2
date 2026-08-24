@@ -38,7 +38,7 @@ from devign_data.word2vec_embed import NodeFeaturizer
 from evaluation.localize import (aggregate, attention_to_lines, length_prior_baseline,
                                 localization_metrics, random_baseline, rank_lines)
 from models.devign import build_model
-from training.utils import load_config, resolve_device, seed_from_config
+from training.utils import load_config, resolve_device_from_config, seed_from_config
 
 
 def normalised_entropy(a: np.ndarray) -> float:
@@ -242,7 +242,7 @@ def main():
 
     cfg = load_config(args.config)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     res = evaluate_localization(cfg, args.model, args.model_dir, args.primevul,
                                args.aggregation, device, args.limit)
     report(res)

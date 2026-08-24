@@ -20,7 +20,7 @@ from devign_data.word2vec_embed import NodeFeaturizer
 from evaluation.cve_eval import evaluate_holdout
 from models.devign import build_model
 from scripts.train import artifact_dir, load_threshold
-from training.utils import load_config, resolve_device, seed_from_config
+from training.utils import load_config, resolve_device_from_config, seed_from_config
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
     args = ap.parse_args()
     cfg = load_config(args.config)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     proc = cfg["data"]["processed_dir"]
 
     featurizer = NodeFeaturizer.load(os.path.join(proc, "featurizer"))

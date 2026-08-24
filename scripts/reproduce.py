@@ -26,7 +26,7 @@ from scripts.run_ablation import ARTIFACT_PATH as ABLATION_ARTIFACT_PATH
 from scripts.run_ablation import run_ablation
 from scripts.train import artifact_dir, save_graph_model, train_graph_model
 from training.metrics import require_unbiased
-from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
+from training.utils import ensure_dir, load_config, resolve_device_from_config, seed_from_config
 
 GRAPH_MODELS = ["devign", "ggrn"]
 BASELINE_LABELS = {
@@ -216,7 +216,7 @@ def main():
 
     cfg = load_config(args.config)
     seed_from_config(cfg)
-    device = resolve_device(cfg["project"]["device"])
+    device = resolve_device_from_config(cfg)
     epochs = args.epochs if args.epochs is not None else (8 if args.quick else None)
     if epochs is not None:
         cfg["training"]["epochs"] = epochs
