@@ -1,7 +1,7 @@
 """Train the Table-2 baselines (BiLSTM, BiLSTM+Att, CNN, Metrics+XGBoost) on the prepared data.
 
 The sequence baselines (BiLSTM/CNN) reuse the cached token sequences + word2vec embedding matrix
-from data/prepare.py. Metrics+XGBoost re-featurizes the persisted train/val function split.
+from devign_data/prepare.py. Metrics+XGBoost re-featurizes the persisted train/val function split.
 """
 from __future__ import annotations
 

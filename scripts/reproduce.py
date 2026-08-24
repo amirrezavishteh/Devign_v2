@@ -20,12 +20,13 @@ import json
 import os
 import traceback
 
-from data.prepare import prepare
+from devign_data.prepare import prepare
 from evaluation.report import format_table2, format_table3
 from scripts.run_ablation import ARTIFACT_PATH as ABLATION_ARTIFACT_PATH
 from scripts.run_ablation import run_ablation
 from scripts.train import artifact_dir, save_graph_model, train_graph_model
-from training.utils import ensure_dir, load_config, resolve_device, set_seed
+from training.metrics import require_unbiased
+from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
 
 GRAPH_MODELS = ["devign", "ggrn"]
 BASELINE_LABELS = {
@@ -110,11 +111,18 @@ def _relabel_combined(per_project: dict) -> dict:
 
 
 def _assemble_table2(cfg, graph_results, baseline_results, use_test: bool):
-    """{method: {project: metrics}} using best_val, or the held-out test split if present."""
+    """{method: {project: metrics}} using best_val, or the held-out test split if present.
+
+    Every cell passes through `require_unbiased` on its way in. `best_val` is scored at the fixed
+    0.5 threshold and `test` at the validation-tuned one, so both are legitimate -- but this is
+    the funnel every published number flows through, and the guard belongs where the table is
+    built rather than in a comment asking future callers to be careful.
+    """
     key = "test" if use_test else "best_val"
 
     def _pick(metrics_dict):
-        return metrics_dict.get(key) or metrics_dict.get("best_val")
+        chosen = metrics_dict.get(key) or metrics_dict.get("best_val")
+        return require_unbiased(chosen, f"reproduce table2 [{key}]") if chosen else chosen
 
     table2 = {}
     table2["Devign (Composite)"] = _relabel_combined(
@@ -129,7 +137,7 @@ def _assemble_table2(cfg, graph_results, baseline_results, use_test: bool):
 def _run_imbalanced(cfg, device):
     import pickle
 
-    from data.word2vec_embed import NodeFeaturizer
+    from devign_data.word2vec_embed import NodeFeaturizer
     from evaluation.imbalanced import (evaluate_devign_imbalanced,
                                        evaluate_static_analyzers, make_imbalanced)
     from models.devign import build_model
@@ -150,7 +158,7 @@ def _run_imbalanced(cfg, device):
     if os.path.exists(model_path):
         import torch
 
-        from data.graph_builder import EDGE_TYPES
+        from devign_data.graph_builder import EDGE_TYPES
 
         featurizer = NodeFeaturizer.load(os.path.join(proc, "featurizer"))
         model = build_model("devign", cfg, code_dim=cfg["embedding"]["word2vec_dim"],
@@ -173,8 +181,8 @@ def _run_imbalanced(cfg, device):
 def _run_q5(cfg, device):
     import torch
 
-    from data.graph_builder import EDGE_TYPES
-    from data.word2vec_embed import NodeFeaturizer
+    from devign_data.graph_builder import EDGE_TYPES
+    from devign_data.word2vec_embed import NodeFeaturizer
     from evaluation.cve_eval import evaluate_holdout
     from models.devign import build_model
 
@@ -207,7 +215,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     device = resolve_device(cfg["project"]["device"])
     epochs = args.epochs if args.epochs is not None else (8 if args.quick else None)
     if epochs is not None:

@@ -1,8 +1,17 @@
-# Generated artifacts and data
-artifacts/
-data/raw/
-data/processed/
-data/processed_commit_disjoint/
+# Generated artifacts. Model weights and per-run JSON are regenerated; the markdown deliverables
+# (RESULTS.md, IDEA_EVAL.md, PREREGISTRATION.md) are the write-up and MUST be tracked -- in
+# particular PREREGISTRATION.md is only worth anything if its commit timestamp precedes the runs
+# it predicts.
+# (`artifacts/*` rather than `artifacts/`: git does not descend into an excluded DIRECTORY, so a
+# negation for a file inside one never fires. Excluding the contents instead keeps the negation
+# reachable.)
+artifacts/*
+!artifacts/*.md
+
+# The dataset directory. `data/` holds ONLY data now: the source package that used to live here
+# is `devign_data/`. That separation is the point -- an ignore rule written for the dataset once
+# swallowed the entire source package of the same name, and this layout makes that impossible.
+data/
 _smoke/
 *.log
 

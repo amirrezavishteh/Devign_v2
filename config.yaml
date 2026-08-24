@@ -6,6 +6,17 @@ project:
   seed: 42
   artifacts_dir: artifacts
   device: cuda  # falls back to cpu automatically if no GPU is available
+  # Same seed must mean same model. Pins cuDNN's autotuner, forbids non-deterministic kernels,
+  # and selects the sorted segment-reduce message passing over atomic scatter. Costs nothing
+  # here -- the deterministic path measured ~6% FASTER than atomics (see models/ggnn.py).
+  deterministic: true
+  # TF32 keeps 10 mantissa bits instead of 23 and is ON by default for cuDNN convolutions on any
+  # Ampere-or-newer GPU. It does not break determinism on a single machine; it makes two machines
+  # disagree. This project develops on an RTX 4060 laptop and trains on an A100, and the Conv
+  # module is Conv1d/Conv2d, so the default would hand the two different arithmetic for identical
+  # code and seed. OFF so they agree. Turning it on buys A100 throughput at the price of making
+  # runs on either side of the switch incomparable -- the manifest records which was used.
+  allow_tf32: false
 
 data:
   # Where raw functions come from:
@@ -122,6 +133,13 @@ embedding:
   word2vec_window: 5
   word2vec_epochs: 10
   word2vec_workers: 4
+  # Force word2vec onto a single thread so the embedding is reproducible. gensim applies
+  # Hogwild-style updates from every worker to one shared weight matrix, so with workers > 1 a
+  # fixed seed still yields different vectors run to run -- and those vectors ARE the Code half of
+  # x_v, so a drifting embedding makes two same-seed training runs incomparable no matter how
+  # deterministic the model is. Costs prepare-time (this becomes the one serial stage); worth it
+  # for anything reported. The run manifest records which setting produced a given artifact.
+  word2vec_deterministic: true
 
 model:
   hidden_dim: 200           # z, GRU hidden state size (h = [x^T, 0]^T padded to z)

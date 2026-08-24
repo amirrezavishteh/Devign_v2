@@ -17,8 +17,8 @@ and have been run on real data (see §5).
 
 | Paper component | Section | Implementation |
 |---|---|---|
-| Graph Embedding Layer (composite semantics) | 2.2 | [data/parser.py](data/parser.py), [data/graph_builder.py](data/graph_builder.py) |
-| Node features `x_v` = Code (word2vec, 100-d) ⊕ Type (label enc.) | 2.2.2 | [data/word2vec_embed.py](data/word2vec_embed.py), [models/node_init.py](models/node_init.py) |
+| Graph Embedding Layer (composite semantics) | 2.2 | [devign_data/parser.py](devign_data/parser.py), [devign_data/graph_builder.py](devign_data/graph_builder.py) |
+| Node features `x_v` = Code (word2vec, 100-d) ⊕ Type (label enc.) | 2.2.2 | [devign_data/word2vec_embed.py](devign_data/word2vec_embed.py), [models/node_init.py](models/node_init.py) |
 | Gated Graph Recurrent layer (Eq. 3–4, T=6, z=200, SUM agg) | 2.3 | [models/ggnn.py](models/ggnn.py) — dense **and** sparse edge-list propagation (see §2) |
 | Conv module (Eq. 6–9, dual branch, 2 conv layers, `pool2` = (2,2)/(1,2)) | 2.4 | [models/conv_module.py](models/conv_module.py) |
 | Devign model + Ggrn flat-summation variant (Eq. 5) | 2.4 | [models/devign.py](models/devign.py) |
@@ -67,7 +67,7 @@ result.
 
 > **Joern vs tree-sitter.** The paper uses Joern (a JVM/Scala code-property-graph tool) for
 > AST/CFG extraction. To keep this repo self-contained we parse with **tree-sitter** and derive
-> CFG/DFG/NCS heuristically in [data/graph_builder.py](data/graph_builder.py) — including the
+> CFG/DFG/NCS heuristically in [devign_data/graph_builder.py](devign_data/graph_builder.py) — including the
 > paper's parser-error filter (`root.has_error`), which real code actually triggers. To use Joern
 > instead, replace `build_graph()` with a Joern CPG exporter producing the same `CodeGraph`. The
 > DFG builder in particular is flow-insensitive and scope-blind (a single source-order pass over
@@ -87,12 +87,12 @@ no faithful reproduction can produce those two columns from public data.
 `data.source` in [config.yaml](config.yaml) selects where raw functions come from:
 
 - **`devign_release` (default).** Downloads and caches the real FFmpeg+QEMU data via
-  [data/hf_devign.py](data/hf_devign.py) (`huggingface_hub` + `pyarrow`, no extra install). All
+  [devign_data/hf_devign.py](devign_data/hf_devign.py) (`huggingface_hub` + `pyarrow`, no extra install). All
   three published splits are concatenated and re-split ourselves (Sec 3.3 does its own random
   split, not CodeXGLUE's). **27,258 functions after de-duplication** (FFmpeg 9,726 / QEMU 17,532).
 - **`file`.** Point `data.real_data_path` at any `json`/`jsonl`/`csv` with
   `{func, target, project, commit_id}` columns (e.g. a Big-Vul export).
-- **`synthetic`.** [data/templates.py](data/templates.py)'s 10 CWE-pattern generator. Offline
+- **`synthetic`.** [devign_data/templates.py](devign_data/templates.py)'s 10 CWE-pattern generator. Offline
   smoke-test only — it is what `--quick` / the test suite exercise, and its numbers are **not**
   vulnerability-detection evidence (the generator is trivially separable; every strong model
   saturates near 100%, including the CNN baseline).
@@ -253,18 +253,27 @@ finishes; this section will be updated with the same numbers.)*
 ## 7. Project layout
 
 ```
-data/         parser, graph builder (incl. parse-error filter), word2vec, dataset/batching
+devign_data/  parser, graph builder (incl. parse-error filter), word2vec, dataset/batching
               (dense + sparse), hf_devign (real dataset download), synthetic templates, prepare
+data/         NOT a package -- the dataset directory (raw/ and processed/), gitignored. The
+              source package above is deliberately named differently so an ignore rule written
+              for the dataset can never swallow the code again.
 models/       node_init, ggnn (dense + sparse GGNN), conv_module, devign+ggrn, baselines, xgboost
-training/     trainer (Adam/L2/early-stop/grad-accum), metrics, baseline training, utils
+training/     trainer (Adam/L2/early-stop/grad-accum), metrics (+ threshold-leakage guard),
+              manifest (run provenance), baseline training, utils (seeding/determinism)
 evaluation/   ablation, imbalanced (Table 3), static analyzers, cve_eval (unseen-commit holdout),
               report formatters
 scripts/      prepare_data, train, train_baselines, run_ablation, run_imbalanced, run_cve,
-              run_leakage_check, reproduce (resumable end-to-end orchestrator)
+              run_leakage_check, check_determinism, reproduce (resumable end-to-end orchestrator)
 inference/    predict (single-function CLI + DevignPredictor class)
-tests/        graph builder, sparse≡dense GGNN equivalence, split logic, model forward/backward
+tests/        graph builder, sparse≡dense GGNN equivalence + run-to-run identity, split logic,
+              model forward/backward, threshold leakage, tree-sitter grammar canary
+configs/      config overlays (`extends:` the root config); smoke.yaml for wiring checks
 Devign_Colab.ipynb   free-tier Colab notebook for the full study
-config.yaml   all hyperparameters
+config.yaml           all hyperparameters
+config_a100.yaml      A100 server overrides (see section 9)
+pyproject.toml        dependency declarations
+requirements.lock.txt exact pinned closure the numbers were measured on
 ```
 
 ---
@@ -272,5 +281,72 @@ config.yaml   all hyperparameters
 ## 8. Tests
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest tests/ -q                         # 90 tests
+python -m scripts.check_determinism --epochs 3     # same seed -> byte-identical run
 ```
+
+Both are gates, not suggestions. `check_determinism` trains twice and compares `metrics.json` and
+`model.pt` byte-for-byte; `allclose` would pass on a non-deterministic scatter whose 6e-7 per-step
+drift compounds into a different model. Run it on whichever machine will produce the numbers.
+
+---
+
+## 9. Running on the A100 server (SSH)
+
+Development happens on a Windows laptop; **all reported numbers come from the A100 box**. The two
+machines must agree, so setup is pinned rather than "whatever pip resolves".
+
+### One-time setup
+
+```bash
+git clone <repo> && cd DEVIGEN
+python -m venv .venv && source .venv/bin/activate
+
+# 1. torch from the CUDA index matching the server's driver -- NOT from PyPI.
+#    Check with `nvidia-smi`; cu121 works on driver >= 530.
+pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# 2. everything else at the exact versions the laptop measured on.
+pip install -r requirements.lock.txt
+pip install -e .
+```
+
+`requirements.lock.txt` pins the dependency **closure**, not a `pip freeze` of an unrelated
+environment. If the server needs a different CUDA build of torch, that is the one line to change --
+record it, because it changes the manifest.
+
+### Gate before any training
+
+```bash
+pytest tests/ -q                                   # must be fully green
+python -m scripts.check_determinism --epochs 3     # must print PASS
+```
+
+`check_determinism` trains the same short run twice and requires **byte-identical** `metrics.json`
+and `model.pt`. Run it on the A100 itself: determinism is a property of the machine, not of the
+repo. It passed here on an RTX 4060 (CUDA 12.1), which predicts but does not prove the A100 result.
+
+### Reproducibility settings that matter on this hardware
+
+| Setting | Value | Why |
+|---|---|---|
+| `project.deterministic` | `true` | Sorted segment-reduce message passing instead of atomic scatter. Measured **~6% faster** as well as reproducible, so there is no tradeoff to weigh. |
+| `project.allow_tf32` | `false` | TF32 is ON by default for cuDNN convolutions on Ampere. The Conv module is Conv1d/Conv2d, so the default gives the A100 different arithmetic from the laptop for identical code and seed. |
+| `embedding.word2vec_deterministic` | `true` | gensim is only reproducible single-threaded; its vectors *are* the node features. |
+| `CUBLAS_WORKSPACE_CONFIG` | `:4096:8` | Set automatically in `training/utils.py` before torch is imported. |
+
+Turning TF32 on is defensible for throughput -- but then re-run the **whole** study with it on.
+Never mix TF32 and non-TF32 runs in one table. The manifest in every `meta.json` records which was
+used, and `training.manifest.compare_manifests` reports whether two runs were comparable at all.
+
+### Typical invocation
+
+```bash
+python -m scripts.prepare_data --config config_a100.yaml
+python -m scripts.train --config config_a100.yaml --model devign
+python -m scripts.reproduce --config config_a100.yaml          # full study
+```
+
+Long runs: use `tmux` or `nohup` so an SSH drop does not kill training. Every epoch checkpoints to
+`<artifacts>/<model>/<project>/checkpoint.pt`, so a dropped session resumes at the last completed
+epoch rather than restarting from scratch.

@@ -13,10 +13,10 @@ import pickle
 
 import numpy as np
 
-from data.dataset import DevignDataset, build_samples, samples_from_graphs
-from data.download import RawFunction, acquire_dataset
-from data.graph_builder import EDGE_TYPES, build_graph
-from data.word2vec_embed import (NodeFeaturizer, TypeVocab, build_corpus,
+from devign_data.dataset import DevignDataset, build_samples, samples_from_graphs
+from devign_data.download import RawFunction, acquire_dataset
+from devign_data.graph_builder import EDGE_TYPES, build_graph
+from devign_data.word2vec_embed import (NodeFeaturizer, TypeVocab, build_corpus,
                                  train_word2vec)
 
 
@@ -154,7 +154,7 @@ def _init_worker(max_nodes: int, max_error_fraction: float) -> None:
 
 def _build_one(source: str):
     """Top-level so it is picklable under Windows spawn. Returns (CodeGraph|None, reason)."""
-    from data.graph_builder import build_graph_with_reason
+    from devign_data.graph_builder import build_graph_with_reason
     try:
         return build_graph_with_reason(source, max_nodes=_WORKER_MAX_NODES,
                                        max_error_fraction=_WORKER_MAX_ERROR_FRACTION)
@@ -164,7 +164,7 @@ def _build_one(source: str):
 
 
 def _build_one_serial(source: str, max_nodes: int, max_error_fraction: float):
-    from data.graph_builder import build_graph_with_reason
+    from devign_data.graph_builder import build_graph_with_reason
     try:
         return build_graph_with_reason(source, max_nodes=max_nodes,
                                        max_error_fraction=max_error_fraction)
@@ -237,11 +237,16 @@ def prepare(config: dict, verbose: bool = True):
 
     # 3. Train word2vec on the code corpus.
     corpus = build_corpus(graphs)
+    w2v_deterministic = emb_cfg.get("word2vec_deterministic", True)
     w2v = train_word2vec(
         corpus, dim=emb_cfg["word2vec_dim"], window=emb_cfg["word2vec_window"],
         min_count=emb_cfg["word2vec_min_count"], epochs=emb_cfg["word2vec_epochs"],
         workers=emb_cfg["word2vec_workers"],
+        seed=config["project"]["seed"], deterministic=w2v_deterministic,
     )
+    if verbose and not w2v_deterministic:
+        print("[prepare] [warn] embedding.word2vec_deterministic is OFF: node features will "
+              "differ between same-seed runs, so results are not comparable.")
     if verbose:
         print(f"[prepare] word2vec vocab: {len(w2v.wv)} tokens, dim {w2v.vector_size}")
 

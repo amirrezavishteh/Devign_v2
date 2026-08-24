@@ -1,0 +1,70 @@
+# Locked dependency closure for the Devign reproduction.
+#
+# Environment these numbers were measured on:
+#   Python 3.12.7 / Windows 11 / NVIDIA RTX 4060 Laptop (8 GB) / CUDA 12.1
+#
+# This is the project's dependency CLOSURE, not a `pip freeze` of the developer's whole
+# environment -- a freeze of an unrelated global env records 300+ packages the project never
+# imports and tells you nothing about what must be reinstalled.
+#
+# torch comes from the PyTorch CUDA index, not PyPI:
+#   pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.lock.txt
+#
+# tree-sitter 0.25.2 + tree-sitter-c 0.24.2 (grammar ABI 15) is pinned BEHAVIOURALLY by
+# tests/test_grammar_canary.py: node types are half of every node feature, so a grammar bump
+# silently changes the type vocabulary and therefore the model.
+#
+# scikit-optimize drives the Metrics+XGBoost baseline's Bayesian hyperparameter search
+# (config `baselines.metrics_xgboost.bayes_opt_iters`). Without it that baseline trains at fixed
+# hyperparameters and is WEAKER than the paper's; models/metrics_xgboost.py now says so loudly
+# rather than falling back in silence.
+
+anyio==4.9.0
+certifi==2025.8.3
+click==8.4.2
+colorama==0.4.6
+filelock==3.19.1
+flawfinder==2.0.20
+fsspec==2024.10.0
+gensim==4.4.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.27.2
+huggingface_hub==1.27.0
+idna==3.7
+iniconfig==2.3.0
+Jinja2==3.1.4
+joblib==1.4.2
+MarkupSafe==3.0.2
+mpmath==1.3.0
+networkx==3.4.2
+numpy==1.26.4
+packaging==24.2
+pandas==2.2.3
+pluggy==1.6.0
+pyaml==26.7.0
+pyarrow==24.0.0
+Pygments==2.18.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+pytz==2022.7.1
+PyYAML==6.0.2
+scikit-learn==1.6.1
+scikit-optimize==0.10.2
+scipy==1.15.0
+setuptools==75.6.0
+six==1.16.0
+smart-open==7.1.0
+sniffio==1.3.1
+sympy==1.13.1
+threadpoolctl==3.5.0
+torch==2.5.1+cu121
+tqdm==4.67.1
+tree-sitter==0.25.2
+tree-sitter-c==0.24.2
+typing_extensions==4.15.0
+tzdata==2025.1
+wrapt==1.17.2
+xgboost==3.3.0

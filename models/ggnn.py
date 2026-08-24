@@ -51,12 +51,19 @@ class GatedGraphRecurrentLayer(nn.Module):
     def forward(self, x: torch.Tensor, adj: torch.Tensor | None, mask: torch.Tensor,
                 edge_index: torch.Tensor | None = None,
                 edge_type: torch.Tensor | None = None,
-                edge_norm: torch.Tensor | None = None) -> torch.Tensor:
+                edge_norm: torch.Tensor | None = None,
+                seg_lengths_dst: torch.Tensor | None = None,
+                seg_lengths_dst_type: torch.Tensor | None = None,
+                fast: bool = False) -> torch.Tensor:
         """x [B, M, d] (d <= z), mask [B, M] -> H^(T) [B, M, z].
 
         Supply either `adj` [B, k, M, M] (dense) or `edge_index`/`edge_type` (sparse). The two
         paths are numerically identical; the sparse one is O(E*z) instead of O(k*M^2) and is what
         makes real 500-node graphs fit at batch_size 128.
+
+        `seg_lengths_*` come from the collate function and select the deterministic segment-sum
+        accumulation; without them the sparse path falls back to atomics. `fast=True` forces
+        atomics even when they are available.
         """
         if edge_index is None and adj is None:
             raise ValueError("GatedGraphRecurrentLayer needs either adj or edge_index")
@@ -71,7 +78,8 @@ class GatedGraphRecurrentLayer(nn.Module):
 
         for _ in range(self.T):
             if edge_index is not None:
-                agg = self._propagate_sparse(h, edge_index, edge_type, edge_norm, B, M)
+                agg = self._propagate_sparse(h, edge_index, edge_type, edge_norm, B, M,
+                                             seg_lengths_dst, seg_lengths_dst_type, fast)
             else:
                 # W_p H + b for all p:  [B, M, k*z] -> [B, k, M, z]
                 transformed = self.edge_transform(h).view(B, M, self.k, self.z).permute(0, 2, 1, 3)
@@ -90,8 +98,36 @@ class GatedGraphRecurrentLayer(nn.Module):
 
     def _propagate_sparse(self, h: torch.Tensor, edge_index: torch.Tensor,
                           edge_type: torch.Tensor, edge_norm: torch.Tensor | None,
-                          B: int, M: int) -> torch.Tensor:
-        """Eq. 3 + Eq. 4's SUM, fused over an edge list instead of k dense adjacencies."""
+                          B: int, M: int, seg_lengths_dst: torch.Tensor | None = None,
+                          seg_lengths_dst_type: torch.Tensor | None = None,
+                          fast: bool = False) -> torch.Tensor:
+        """Eq. 3 + Eq. 4's SUM, fused over an edge list instead of k dense adjacencies.
+
+        Two accumulation paths, mathematically identical, differing only in summation ORDER:
+
+        ``segment`` (default)
+            Edges arrive sorted by destination (see `make_collate_fn`), so each node's incoming
+            messages are one contiguous run and `segment_reduce` sums them in a fixed order.
+            Reproducible bitwise, run to run.
+
+        ``fast`` (`--fast`)
+            `index_add_` / `index_put_(accumulate=True)`, i.e. atomic float adds. On CUDA these
+            land in whatever order the scheduler happens to produce, and float addition is not
+            associative, so two same-seed runs diverge.
+
+        Measured on an RTX 4060 Laptop (B=4, M~500, k=7, z=200, T=6, fwd+bwd, 5 interleaved
+        trials of 50 iterations):
+
+            atomic   10.25 +/- 0.06 ms      bitwise-identical on  0/20 repeats (drift 6e-7)
+            segment   9.62 +/- 0.04 ms      bitwise-identical on 20/20 repeats
+
+        So `--fast` is a misnomer: sorted contiguous segments have better memory locality than
+        scattered atomics, and the deterministic path is ~6% FASTER as well as reproducible. The
+        atomic path is kept as the fallback for batches built without segment lengths (older
+        pickles, hand-built test batches) and for A/B measurement -- not because it buys speed.
+        A 6e-7 per-step drift is negligible in isolation and compounds across thousands of steps
+        into a genuinely different model, which is what made same-seed runs incomparable.
+        """
         N = B * M
         # W_p h_src + b for every p, then keep only each edge's own type slice.
         transformed = self.edge_transform(h).view(N, self.k, self.z)   # [N, k, z]
@@ -100,14 +136,26 @@ class GatedGraphRecurrentLayer(nn.Module):
         if edge_norm is not None:
             msg = msg * edge_norm.unsqueeze(-1)
 
+        # Fall back to atomics when the batch predates the sorted-edge contract (e.g. a
+        # hand-built GraphBatch in a test), so the layer stays usable either way.
+        use_segment = not fast and seg_lengths_dst is not None
+
         if self.aggregation == "concat":
-            # Keep messages separated per edge type, then flatten to [N, k*z].
+            if use_segment:
+                # One segment per (node, edge type): [N*k, z] -> [N, k*z].
+                out = torch.segment_reduce(msg, "sum", lengths=seg_lengths_dst_type, axis=0,
+                                           unsafe=True, initial=0)
+                return out.view(B, M, self.k * self.z)
             out = h.new_zeros(N, self.k, self.z)
             out.index_put_((dst, edge_type), msg, accumulate=True)
             return out.view(B, M, self.k * self.z)
 
         if self.aggregation in {"sum", "mean"}:
-            out = h.new_zeros(N, self.z).index_add_(0, dst, msg)
+            if use_segment:
+                out = torch.segment_reduce(msg, "sum", lengths=seg_lengths_dst, axis=0,
+                                           unsafe=True, initial=0)
+            else:
+                out = h.new_zeros(N, self.z).index_add_(0, dst, msg)
             if self.aggregation == "mean":
                 # Mean over the k edge types, matching the dense path (which averages the k
                 # per-type message matrices, including the types with no incoming edge).
@@ -115,6 +163,10 @@ class GatedGraphRecurrentLayer(nn.Module):
             return out.view(B, M, self.z)
 
         # max: aggregate per (node, edge type) first, then take the max across types.
-        per_type = h.new_zeros(N, self.k, self.z)
-        per_type.index_put_((dst, edge_type), msg, accumulate=True)
+        if use_segment:
+            per_type = torch.segment_reduce(msg, "sum", lengths=seg_lengths_dst_type, axis=0,
+                                            unsafe=True, initial=0).view(N, self.k, self.z)
+        else:
+            per_type = h.new_zeros(N, self.k, self.z)
+            per_type.index_put_((dst, edge_type), msg, accumulate=True)
         return per_type.max(dim=1).values.view(B, M, self.z)

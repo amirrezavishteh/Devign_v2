@@ -50,7 +50,7 @@ class TrainConfig:
     lr_factor: float = 0.5
     lr_patience: int = 5
     min_lr: float = 1e-6
-    # When the loader yields node-budget micro-batches (see data.dataset.BucketBySizeSampler),
+    # When the loader yields node-budget micro-batches (see devign_data.dataset.BucketBySizeSampler),
     # accumulate gradients until `batch_size` graphs have been seen before stepping, so the
     # effective batch size stays the paper's 128 no matter how the micro-batches fall out.
     accumulate_to_batch_size: bool = True
@@ -108,7 +108,10 @@ def _labels_of(batch):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, threshold: float = 0.5):
+def evaluate(model, loader, device, threshold: float = 0.5, split: str | None = None,
+             fitted_on_split: str | None = None):
+    """Score `loader`. `split`/`fitted_on_split` tag the result so `metrics.require_unbiased`
+    can refuse it later if the threshold was tuned on this very split."""
     model.eval()
     all_probs, all_labels, all_projects = [], [], []
     for batch in loader:
@@ -121,7 +124,8 @@ def evaluate(model, loader, device, threshold: float = 0.5):
         all_projects.extend(projects)
     probs = np.concatenate(all_probs)
     labels = np.concatenate(all_labels)
-    metrics = prob_metrics(labels, probs, threshold)
+    metrics = prob_metrics(labels, probs, threshold, split=split,
+                           fitted_on_split=fitted_on_split)
     return metrics, probs, labels, all_projects
 
 
@@ -149,6 +153,10 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
     best_metrics = None
     epochs_no_improve = 0
     start_epoch = 1
+    # Micro-batches dropped to CUDA OOM across the whole run. Reported in the epoch log and the
+    # returned metrics: silently training on less data than you asked for is the kind of thing
+    # that shows up later as unexplained seed variance.
+    oom_skipped = 0
 
     # Resume a run interrupted by a GPU fault / preemption / OOM.
     if cfg.checkpoint_path and os.path.exists(cfg.checkpoint_path):
@@ -163,6 +171,7 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         best_score = ckpt["best_score"]
         best_metrics = ckpt["best_metrics"]
         epochs_no_improve = ckpt["epochs_no_improve"]
+        oom_skipped = ckpt.get("oom_skipped", 0)
         start_epoch = ckpt["epoch"] + 1
         if verbose:
             print(f"  resumed from {cfg.checkpoint_path} at epoch {start_epoch} "
@@ -176,7 +185,7 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         torch.save({"epoch": epoch, "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(), "best_state": best_state,
                     "best_score": best_score, "best_metrics": best_metrics,
-                    "epochs_no_improve": epochs_no_improve,
+                    "epochs_no_improve": epochs_no_improve, "oom_skipped": oom_skipped,
                     "scheduler": scheduler.state_dict() if scheduler else None}, tmp)
         os.replace(tmp, cfg.checkpoint_path)   # atomic: a crash mid-write can't corrupt it
 
@@ -211,12 +220,21 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
             except torch.cuda.OutOfMemoryError:
                 if not cfg.skip_oom_batches:
                     raise
-                # A co-tenant can grab VRAM mid-run; drop this micro-batch rather than lose
-                # the whole training run. Accumulated grads stay valid for the next step.
+                # A co-tenant can grab VRAM mid-run; drop this micro-batch rather than lose the
+                # whole training run.
+                #
+                # The gradients accumulated so far in this step are DISCARDED, not kept. An OOM
+                # fires partway through backward, so some parameters carry this batch's gradient
+                # and some do not -- a mixture that is not the gradient of anything. Keeping it
+                # would silently corrupt the step. The cost is that the graphs already accumulated
+                # into this step are thrown away too, which is why the count is surfaced: a run
+                # that quietly dropped a third of its batches is not the run you think you have.
                 optimizer.zero_grad(set_to_none=True)
                 pending = 0
+                oom_skipped += 1
                 torch.cuda.empty_cache()
-                print("  [warn] skipped a micro-batch after CUDA OOM (freeing cache)")
+                print(f"  [warn] CUDA OOM: discarded this micro-batch AND the partial gradients "
+                      f"accumulated toward the current step ({oom_skipped} so far this run)")
                 continue
 
             bs = labels.shape[0]
@@ -252,10 +270,11 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
             # readout starts almost degenerate (~6e-4 wide), so a spread still under ~0.05 after a
             # few epochs means the head has not come alive and nothing downstream is meaningful.
             spread = float(val_probs.max() - val_probs.min()) if val_probs.size else 0.0
+            oom_note = f" | oom-skipped {oom_skipped}" if oom_skipped else ""
             print(f"  epoch {epoch:3d} | loss {total_loss / max(1, n_batches):.4f} "
                   f"| val acc {val_metrics['accuracy']:.2f} f1 {val_metrics['f1']:.2f} "
                   f"| spread {spread:.3f} | lr {optimizer.param_groups[0]['lr']:.2e} "
-                  f"| best {cfg.monitor} {best_score:.2f}")
+                  f"| best {cfg.monitor} {best_score:.2f}{oom_note}")
 
         _save_checkpoint(epoch)
 
@@ -273,14 +292,35 @@ def train_model(model, train_loader: DataLoader, val_loader: DataLoader,
         except OSError:
             pass
 
-    # Pick the operating point on validation using the restored (best) weights, then report at it.
-    # Done after restoration so the threshold belongs to the checkpoint we actually ship.
-    final_val, probs, labels, _ = evaluate(model, val_loader, device)
+    # Pick the operating point on validation using the restored (best) weights. Done after
+    # restoration so the threshold belongs to the checkpoint we actually ship.
+    #
+    # What is returned deliberately distinguishes two different things:
+    #   `val@0.5`    -- unbiased on validation, and the only figure here comparable to the paper.
+    #   `val@tuned`  -- tagged fitted_on_split="val", because the threshold was chosen on these
+    #                   very labels. `metrics.require_unbiased` refuses it at reporting time.
+    # The tuned threshold itself is a hyperparameter and travels on; applying it to a held-out
+    # test split (scripts/train.py) is the unbiased way to use it.
+    _, probs, labels, _ = evaluate(model, val_loader, device, split="val")
     threshold = (best_threshold(labels, probs, cfg.threshold_objective)
                  if cfg.tune_threshold else 0.5)
-    best_metrics = prob_metrics(labels, probs, threshold)
+    val_at_half = prob_metrics(labels, probs, 0.5, split="val")
+    val_at_tuned = prob_metrics(labels, probs, threshold, split="val",
+                                fitted_on_split="val" if cfg.tune_threshold else None)
     if verbose:
         print(f"  restored best ({cfg.monitor} {best_score:.2f}) | threshold {threshold:.3f} "
-              f"-> val acc {best_metrics['accuracy']:.2f} f1 {best_metrics['f1']:.2f} "
-              f"auc {best_metrics['auc']:.2f}")
+              f"-> val@0.5 acc {val_at_half['accuracy']:.2f} f1 {val_at_half['f1']:.2f} "
+              f"auc {val_at_half['auc']:.2f} pr-auc {val_at_half['pr_auc']:.2f}")
+        if cfg.tune_threshold:
+            print(f"  (val@tuned acc {val_at_tuned['accuracy']:.2f} "
+                  f"f1 {val_at_tuned['f1']:.2f} -- BIASED, threshold was fitted here; "
+                  f"apply it to the test split to report it)")
+
+    best_metrics = dict(val_at_half)
+    best_metrics["threshold"] = float(threshold)
+    best_metrics["val_at_tuned"] = val_at_tuned
+    best_metrics["oom_skipped"] = oom_skipped
+    if oom_skipped and verbose:
+        print(f"  [warn] this run dropped {oom_skipped} micro-batches to CUDA OOM; it trained on "
+              f"less data than configured. Treat it as a separate condition, not another seed.")
     return model, best_metrics

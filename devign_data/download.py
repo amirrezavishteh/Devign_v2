@@ -21,7 +21,7 @@ import random
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from data.templates import TEMPLATES
+from devign_data.templates import TEMPLATES
 
 
 @dataclass
@@ -111,7 +111,7 @@ def _load_records(path: str) -> list[dict]:
 
 
 def _to_raw(r: dict, split: str = "") -> Optional[RawFunction]:
-    from data.hf_devign import normalise_project
+    from devign_data.hf_devign import normalise_project
 
     func = r.get("func") or r.get("function") or r.get("code")
     if func is None or not str(func).strip():
@@ -213,7 +213,7 @@ def _from_devign_release(data_cfg: dict) -> list[RawFunction]:
     if local and os.path.isdir(local):
         functions = load_devign_parquet_dir(local)
     else:
-        from data.hf_devign import fetch_devign_release
+        from devign_data.hf_devign import fetch_devign_release
         records = fetch_devign_release(cache_dir=data_cfg.get("hf_cache_dir"))
         functions = _dedupe_functions([RawFunction(**r) for r in records])
 

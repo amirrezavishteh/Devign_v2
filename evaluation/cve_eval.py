@@ -27,9 +27,9 @@ import pickle
 
 import numpy as np
 
-from data.dataset import DevignDataset, build_samples
-from data.graph_builder import EDGE_TYPES
-from data.word2vec_embed import NodeFeaturizer
+from devign_data.dataset import DevignDataset, build_samples
+from devign_data.graph_builder import EDGE_TYPES
+from devign_data.word2vec_embed import NodeFeaturizer
 from training.trainer import evaluate
 
 

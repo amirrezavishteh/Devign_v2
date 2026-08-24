@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from data.graph_builder import CodeGraph, build_graph
+from devign_data.graph_builder import CodeGraph, build_graph
 
 _LOOP_TYPES = {"for_statement", "while_statement", "do_statement"}
 _BRANCH_TYPES = {"if_statement", "case_statement", "switch_statement"}
@@ -88,6 +88,10 @@ def train_xgboost(X_train, y_train, n_estimators=200, max_depth=6, bayes_opt_ite
             subsample=0.8, colsample_bytree=0.8, eval_metric="logloss", n_jobs=4,
         )
         if bayes_opt_iters and bayes_opt_iters > 0:
+            # Every fallback below is announced. The paper's Metrics+XGBoost baseline is
+            # Bayesian-optimised, so skipping the search trains a WEAKER baseline than the one we
+            # claim to compare against -- and the previous bare `except Exception: pass` made that
+            # invisible in the logs and in the results table.
             try:
                 from skopt import BayesSearchCV
                 from skopt.space import Integer, Real
@@ -102,11 +106,20 @@ def train_xgboost(X_train, y_train, n_estimators=200, max_depth=6, bayes_opt_ite
                 )
                 search.fit(X_train, y_train)
                 return search.best_estimator_
-            except Exception:
-                pass
+            except ImportError:
+                print("  [warn] scikit-optimize not installed: Metrics+XGBoost trains at FIXED "
+                      "hyperparameters, NOT the paper's Bayesian search, so this baseline is "
+                      "weaker than the paper's. `pip install scikit-optimize`, or record the "
+                      "omission beside the number.")
+            except Exception as exc:
+                print(f"  [warn] Bayesian hyperparameter search failed ({type(exc).__name__}: "
+                      f"{exc}); falling back to FIXED hyperparameters.")
         model.fit(X_train, y_train)
         return model
-    except Exception:
+    except ImportError:
+        # Not the same model as the paper's baseline, so say so rather than quietly swapping it.
+        print("  [warn] xgboost not installed: substituting sklearn GradientBoostingClassifier. "
+              "This is NOT the paper's Metrics+XGBoost baseline -- label it accordingly.")
         from sklearn.ensemble import GradientBoostingClassifier
         model = GradientBoostingClassifier(n_estimators=n_estimators, max_depth=max_depth)
         model.fit(X_train, y_train)

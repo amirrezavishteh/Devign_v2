@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from data.parser import ASTNode, flatten_ast
+from devign_data.parser import ASTNode, flatten_ast
 
 EDGE_TYPES = ["AST", "REV_AST", "CFG", "NCS", "DFG_R", "DFG_W", "DFG_C"]
 

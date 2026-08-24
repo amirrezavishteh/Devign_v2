@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import argparse
 
-from data.prepare import prepare
-from training.utils import load_config, set_seed
+from devign_data.prepare import prepare
+from training.utils import load_config, seed_from_config
 
 
 def main():
@@ -16,7 +16,7 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     info = prepare(cfg, verbose=True)
     print("[prepare_data] summary:", info)
 

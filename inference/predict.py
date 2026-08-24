@@ -16,10 +16,10 @@ import sys
 
 import torch
 
-from data.dataset import sample_from_graph
-from data.download import RawFunction
-from data.graph_builder import EDGE_TYPES, build_graph
-from data.word2vec_embed import NodeFeaturizer
+from devign_data.dataset import sample_from_graph
+from devign_data.download import RawFunction
+from devign_data.graph_builder import EDGE_TYPES, build_graph
+from devign_data.word2vec_embed import NodeFeaturizer
 from models.devign import build_model
 from scripts.train import artifact_dir, load_threshold, make_collate_from_cfg
 from training.utils import load_config, resolve_device

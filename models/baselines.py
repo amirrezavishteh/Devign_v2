@@ -37,7 +37,7 @@ class TokenVocab:
 
 def tokenize_c(source: str) -> list[str]:
     """Lightweight C tokenizer: reuse tree-sitter leaf tokens in source order."""
-    from data.parser import flatten_ast
+    from devign_data.parser import flatten_ast
     nodes, _ = flatten_ast(source)
     leaves = sorted((n for n in nodes if n.is_leaf), key=lambda n: n.start_byte)
     return [n.code for n in leaves]

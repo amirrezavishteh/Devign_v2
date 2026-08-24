@@ -10,3 +10,12 @@ dataset:
   # still survives a co-tenant grabbing 40+ GB. This does NOT change results: micro-batches are
   # gradient-accumulated up to training.batch_size, preserving the paper's effective 128.
   max_nodes_per_batch: 24000
+
+project:
+  # Deliberately NOT overridden to true, even though the A100 would be meaningfully faster with
+  # TF32 on. The laptop this repo is developed on and this server would then compute different
+  # arithmetic for identical code and seed, and every local check would stop predicting what the
+  # server does. If you turn it on, turn it on for the whole study and re-run everything -- do
+  # not mix TF32 and non-TF32 runs in one results table.
+  allow_tf32: false
+  deterministic: true

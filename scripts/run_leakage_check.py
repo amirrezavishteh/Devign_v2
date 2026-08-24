@@ -20,13 +20,13 @@ import copy
 import json
 import os
 
-from data.dataset import positive_rate
-from data.graph_builder import EDGE_TYPES
-from data.prepare import prepare
+from devign_data.dataset import positive_rate
+from devign_data.graph_builder import EDGE_TYPES
+from devign_data.prepare import prepare
 from models.devign import build_model
 from scripts.train import artifact_dir, load_graph_loaders
 from training.trainer import evaluate, make_train_config, train_model
-from training.utils import ensure_dir, load_config, resolve_device, set_seed
+from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
 
 
 def _leakage_config(cfg: dict) -> dict:
@@ -57,7 +57,7 @@ def main():
 
     base_cfg = load_config(args.config)
     cfg = _leakage_config(base_cfg)
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     device = resolve_device(cfg["project"]["device"])
 
     train_path = os.path.join(cfg["data"]["processed_dir"], "train.pkl")

@@ -17,9 +17,23 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from data.download import RawFunction
-from data.graph_builder import EDGE_TYPES, build_graph
-from data.word2vec_embed import NodeFeaturizer
+from devign_data.download import RawFunction
+from devign_data.graph_builder import EDGE_TYPES, build_graph
+from devign_data.word2vec_embed import NodeFeaturizer
+
+
+# Bumped whenever the on-disk shape of a persisted split changes: a new GraphSample field, a new
+# pickled key, or a move of the defining module. `prepare` is cheap to re-run and a silently
+# mismatched cache is not, so `DevignDataset.load` refuses anything it did not write.
+#   1 -- `data.dataset` era (implicit; never stamped)
+#   2 -- renamed to `devign_data.dataset`
+FORMAT_VERSION = 2
+
+
+def _stale_processed_data(path: str, why: str) -> RuntimeError:
+    return RuntimeError(
+        f"cannot load processed split {path}: {why}.\n"
+        f"Re-run `python -m scripts.prepare_data` to rebuild it.")
 
 
 @dataclass
@@ -104,13 +118,23 @@ class DevignDataset(Dataset):
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
-            pickle.dump({"samples": self.samples, "type_vocab_size": self.type_vocab_size,
+            pickle.dump({"format_version": FORMAT_VERSION, "samples": self.samples,
+                         "type_vocab_size": self.type_vocab_size,
                          "edge_types": self.edge_types}, f)
 
     @classmethod
     def load(cls, path: str) -> "DevignDataset":
-        with open(path, "rb") as f:
-            d = pickle.load(f)
+        try:
+            with open(path, "rb") as f:
+                d = pickle.load(f)
+        except ModuleNotFoundError as exc:
+            # Pickles record the defining module of every class they contain, so anything written
+            # before the `data` -> `devign_data` rename names a module that no longer exists.
+            raise _stale_processed_data(path, f"it was written by the old `data` package ({exc})")
+        found = d.get("format_version", 0)
+        if found != FORMAT_VERSION:
+            raise _stale_processed_data(
+                path, f"format version {found}, this build writes {FORMAT_VERSION}")
         return cls(d["samples"], d["type_vocab_size"], edge_types=d["edge_types"])
 
 
@@ -140,6 +164,16 @@ class GraphBatch:
     edge_index: torch.Tensor | None = None
     edge_type: torch.Tensor | None = None
     edge_norm: torch.Tensor | None = None   # [E] 1/out-degree, only when normalize_adj is on
+    # Segment lengths for the deterministic scatter in GatedGraphRecurrentLayer._propagate_sparse.
+    # Edges above are SORTED by destination, so each node's incoming messages occupy one
+    # contiguous run and can be summed by segment reduction instead of atomic accumulation --
+    # atomics add in completion order and float addition is not associative, so the atomic path
+    # gives bitwise-different results run to run on CUDA. Computed once here, on CPU, so the
+    # training loop pays nothing.
+    #   seg_lengths_dst  [B*M]     incoming edge count per node   (sum/mean aggregation)
+    #   seg_lengths_dst_type [B*M*k] per (node, edge type)        (concat/max aggregation)
+    seg_lengths_dst: torch.Tensor | None = None
+    seg_lengths_dst_type: torch.Tensor | None = None
 
     def to(self, device) -> "GraphBatch":
         def _mv(t):
@@ -157,6 +191,8 @@ class GraphBatch:
             edge_index=_mv(self.edge_index),
             edge_type=_mv(self.edge_type),
             edge_norm=_mv(self.edge_norm),
+            seg_lengths_dst=_mv(self.seg_lengths_dst),
+            seg_lengths_dst_type=_mv(self.seg_lengths_dst_type),
         )
 
 
@@ -257,6 +293,27 @@ def make_collate_fn(edge_types: list[str], add_self_loops: bool = False,
             if t_hi >= k or int(edge_type.min()) < 0:
                 raise ValueError(f"edge_type out of range: max {t_hi} for {k} edge types")
 
+        # Sort edges by destination so each node's incoming messages form one contiguous run,
+        # which is what lets the GGNN sum them by segment reduction instead of atomic scatter.
+        # The composite key (dst * k + type) orders by destination first and edge type second, so
+        # the SAME ordering serves both the [B*M] segments that sum/mean needs and the [B*M*k]
+        # segments that concat/max needs -- one sort, two segment views.
+        #
+        # This is a pure reordering of an unordered edge set: it changes no value, only the order
+        # the additions happen in, which is precisely the thing that was making CUDA runs differ.
+        n_slots = B * M
+        seg_lengths_dst = torch.zeros(n_slots, dtype=torch.long)
+        seg_lengths_dst_type = torch.zeros(n_slots * k, dtype=torch.long)
+        if edge_index.numel():
+            composite = edge_index[1] * k + edge_type
+            order = torch.argsort(composite, stable=True)
+            edge_index = edge_index[:, order]
+            edge_type = edge_type[order]
+            if edge_norm is not None:
+                edge_norm = edge_norm[order]
+            seg_lengths_dst = torch.bincount(edge_index[1], minlength=n_slots)
+            seg_lengths_dst_type = torch.bincount(composite[order], minlength=n_slots * k)
+
         adj = None
         if not sparse:
             adj = torch.zeros(B, k, M, M, dtype=torch.float32)
@@ -269,6 +326,7 @@ def make_collate_fn(edge_types: list[str], add_self_loops: bool = False,
             code_feat=code_feat, type_ids=type_ids, adj=adj, mask=mask,
             labels=labels, num_nodes=num_nodes, projects=projects, names=names,
             edge_index=edge_index, edge_type=edge_type, edge_norm=edge_norm,
+            seg_lengths_dst=seg_lengths_dst, seg_lengths_dst_type=seg_lengths_dst_type,
         )
 
     return collate

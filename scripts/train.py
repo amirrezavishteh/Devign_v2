@@ -15,12 +15,15 @@ import os
 import torch
 from torch.utils.data import DataLoader
 
-from data.dataset import (BucketBySizeSampler, DevignDataset, make_collate_fn,
+from devign_data.dataset import (BucketBySizeSampler, DevignDataset, make_collate_fn,
                           positive_rate)
-from data.graph_builder import EDGE_TYPES
+from devign_data.graph_builder import EDGE_TYPES
 from models.devign import build_model
+from training.manifest import build_manifest
+from training.metrics import require_unbiased
 from training.trainer import evaluate, make_train_config, train_model
-from training.utils import ensure_dir, load_config, resolve_device, set_seed
+from training.utils import (ensure_dir, load_config, loader_generator, resolve_device,
+                            seed_from_config, seed_worker)
 
 
 def make_collate_from_cfg(cfg, edge_types):
@@ -46,13 +49,20 @@ def _loader(ds, cfg, collate, shuffle: bool):
     a batch of large graphs from exhausting VRAM, and that applies regardless of shuffling."""
     ds_cfg = cfg.get("dataset", {})
     bs = cfg["training"]["batch_size"]
+    seed = cfg["project"]["seed"]
+    # Explicit generator + per-worker seeding. Both are no-ops at today's num_workers=0 default,
+    # and both are what silently breaks reproducibility the moment someone raises it: workers
+    # otherwise inherit one RNG state, and shuffling otherwise consumes the global torch stream,
+    # coupling batch order to how many random numbers the model happened to draw first.
+    common = dict(collate_fn=collate, worker_init_fn=seed_worker,
+                  generator=loader_generator(seed))
     if ds_cfg.get("bucket_by_size", True) and len(ds) > 0:
         sampler = BucketBySizeSampler(
             [s.num_nodes for s in ds.samples], bs,
             max_nodes_per_batch=ds_cfg.get("max_nodes_per_batch"),
-            shuffle=shuffle, seed=cfg["project"]["seed"])
-        return DataLoader(ds, batch_sampler=sampler, collate_fn=collate)
-    return DataLoader(ds, batch_size=bs, shuffle=shuffle, collate_fn=collate)
+            shuffle=shuffle, seed=seed)
+        return DataLoader(ds, batch_sampler=sampler, **common)
+    return DataLoader(ds, batch_size=bs, shuffle=shuffle, **common)
 
 
 def load_graph_loaders(cfg, edge_types, project: str | None = None):
@@ -118,19 +128,31 @@ def train_graph_model(cfg, model_name: str, device, epochs=None, project: str | 
         checkpoint_path=os.path.join(artifact_dir(cfg, model_name, project), "checkpoint.pt"))
     model, best = train_model(model, train_loader, val_loader, tcfg, verbose=verbose)
 
-    # Apply the validation-tuned operating point to the held-out test split -- the threshold is a
-    # hyperparameter chosen on val, so using it on test stays unbiased.
+    # The threshold is a hyperparameter chosen on validation, so applying it to the held-out TEST
+    # split stays unbiased -- that split had no say in choosing it.
     threshold = best.get("threshold", 0.5)
-    final_metrics, _, _, _ = evaluate(model, val_loader, device, threshold=threshold)
+    # Validation scored at that same threshold is biased by construction, and is tagged as such so
+    # `metrics.require_unbiased` refuses it if anything tries to table it. Kept because it is a
+    # useful diagnostic (it upper-bounds what the operating point can do), not a result.
+    final_metrics, _, _, _ = evaluate(model, val_loader, device, threshold=threshold,
+                                      split="val", fitted_on_split="val")
 
     test_metrics = None
-    _, test_loader = load_test_loader(cfg, EDGE_TYPES, project)
+    test_ds, test_loader = load_test_loader(cfg, EDGE_TYPES, project)
     if test_loader is not None:
-        test_metrics, _, _, _ = evaluate(model, test_loader, device, threshold=threshold)
+        test_metrics, _, _, _ = evaluate(model, test_loader, device, threshold=threshold,
+                                         split="test", fitted_on_split="val")
+
+    # Provenance for this run. Carried inside the metrics dict so neither caller's signature has
+    # to change; save_graph_model lifts it out into meta.json.
+    splits = {"train": train_ds.samples, "val": val_ds.samples}
+    if test_ds is not None:
+        splits["test"] = test_ds.samples
+    manifest = build_manifest(cfg, cfg["project"]["seed"], device, splits)
 
     return (model,
             {"best_val": best, "final_val": final_metrics, "test": test_metrics,
-             "threshold": threshold},
+             "threshold": threshold, "manifest": manifest},
             train_ds)
 
 
@@ -138,6 +160,9 @@ def save_graph_model(cfg, model, model_name: str, project: str | None, metrics: 
                      type_vocab_size: int) -> str:
     out_dir = ensure_dir(artifact_dir(cfg, model_name, project))
     torch.save(model.state_dict(), os.path.join(out_dir, "model.pt"))
+    # Provenance belongs in meta.json, so metrics.json stays a file of numbers only.
+    metrics = dict(metrics)
+    manifest = metrics.pop("manifest", None)
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
     meta = {
@@ -147,6 +172,9 @@ def save_graph_model(cfg, model, model_name: str, project: str | None, metrics: 
         # The model's operating point, tuned on validation. Downstream evaluation (Table 3, the
         # Q5 holdout, inference) must use this rather than assuming 0.5.
         "threshold": metrics.get("threshold", 0.5),
+        # Git SHA, resolved-config hash, library versions, seed, device and per-split hashes.
+        # Two runs are comparable only if their split hashes match -- see training/manifest.py.
+        "manifest": manifest,
     }
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
@@ -163,19 +191,30 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     device = resolve_device(cfg["project"]["device"])
     print(f"[train] model={args.model} project={args.project or 'combined'} device={device}")
 
     model, metrics, train_ds = train_graph_model(
         cfg, args.model, device, epochs=args.epochs, project=args.project)
-    best = metrics["best_val"]
-    print(f"[train] best val: acc {best['accuracy']:.2f} f1 {best['f1']:.2f} "
-          f"auc {best.get('auc', float('nan')):.2f} @ threshold {metrics['threshold']:.3f}")
+
+    # `best_val` is scored at the fixed 0.5 threshold, so it is unbiased and comparable to the
+    # paper. require_unbiased is called rather than assumed: it is the guard, not a comment.
+    best = require_unbiased(metrics["best_val"], "scripts.train best_val")
+    print(f"[train] best val @0.5: acc {best['accuracy']:.2f} f1 {best['f1']:.2f} "
+          f"auc {best.get('auc', float('nan')):.2f} pr-auc {best.get('pr_auc', float('nan')):.2f}")
+    print(f"[train] tuned threshold: {metrics['threshold']:.3f}")
+
     if metrics["test"]:
-        t = metrics["test"]
-        print(f"[train] held-out test: acc {t['accuracy']:.2f} f1 {t['f1']:.2f} "
-              f"auc {t.get('auc', float('nan')):.2f}")
+        t = require_unbiased(metrics["test"], "scripts.train test")
+        print(f"[train] held-out test @tuned: acc {t['accuracy']:.2f} f1 {t['f1']:.2f} "
+              f"auc {t.get('auc', float('nan')):.2f} pr-auc {t.get('pr_auc', float('nan')):.2f}")
+    elif cfg["training"].get("tune_threshold", True):
+        # The paper_split path: 75/25 train/val and no test set, so there is no split the tuned
+        # threshold has not already seen. Say so instead of printing a number that looks unbiased.
+        print("[train] NO TEST SPLIT (data.paper_split: true). The tuned threshold cannot be "
+              "reported: every split it could be applied to is the one it was fitted on. Report "
+              "the val@0.5 row above, or set data.paper_split: false to hold out a test split.")
 
     out_dir = save_graph_model(cfg, model, args.model, args.project, metrics,
                                train_ds.type_vocab_size)

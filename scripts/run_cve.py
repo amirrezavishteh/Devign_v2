@@ -15,12 +15,12 @@ import os
 
 import torch
 
-from data.graph_builder import EDGE_TYPES
-from data.word2vec_embed import NodeFeaturizer
+from devign_data.graph_builder import EDGE_TYPES
+from devign_data.word2vec_embed import NodeFeaturizer
 from evaluation.cve_eval import evaluate_holdout
 from models.devign import build_model
 from scripts.train import artifact_dir, load_threshold
-from training.utils import load_config, resolve_device, set_seed
+from training.utils import load_config, resolve_device, seed_from_config
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
                     help="which trained Devign model to evaluate (default: combined)")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     device = resolve_device(cfg["project"]["device"])
     proc = cfg["data"]["processed_dir"]
 

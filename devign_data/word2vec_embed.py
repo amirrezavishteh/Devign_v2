@@ -19,8 +19,8 @@ from typing import Iterable
 import numpy as np
 from gensim.models import Word2Vec
 
-from data.graph_builder import CodeGraph
-from data.parser import ASTNode
+from devign_data.graph_builder import CodeGraph
+from devign_data.parser import ASTNode
 
 UNK_TYPE = "<UNK_TYPE>"
 
@@ -47,10 +47,24 @@ def build_corpus(graphs: Iterable[CodeGraph]) -> list[list[str]]:
 
 
 def train_word2vec(corpus: list[list[str]], dim: int = 100, window: int = 5,
-                    min_count: int = 1, epochs: int = 10, workers: int = 4) -> Word2Vec:
+                    min_count: int = 1, epochs: int = 10, workers: int = 4,
+                    seed: int = 42, deterministic: bool = True) -> Word2Vec:
+    """Train the Code half of x_v.
+
+    `deterministic` forces `workers=1`. gensim is only reproducible single-threaded: with more
+    than one worker, threads apply Hogwild-style updates to the shared weight matrix in
+    whatever order they are scheduled, so a fixed `seed` still yields different vectors run to
+    run. Those vectors ARE the node features, so a drifting embedding makes two same-seed
+    training runs incomparable no matter how deterministic everything downstream is.
+
+    The cost is real -- this is the single-threaded stage of an otherwise parallel prepare -- so
+    it is exposed as `embedding.word2vec_deterministic` rather than forced. Turning it off is
+    defensible for a throwaway smoke run and not for anything reported; the run manifest records
+    which was used.
+    """
     model = Word2Vec(
         sentences=corpus, vector_size=dim, window=window, min_count=min_count,
-        workers=workers, epochs=epochs, sg=1,
+        workers=1 if deterministic else workers, epochs=epochs, sg=1, seed=seed,
     )
     return model
 

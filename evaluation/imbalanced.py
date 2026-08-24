@@ -52,7 +52,7 @@ def evaluate_devign_imbalanced(cfg, model, device, splits, featurizer, edge_type
 
     Returns (per_project_metrics, threshold).
     """
-    from data.dataset import DevignDataset, build_samples
+    from devign_data.dataset import DevignDataset, build_samples
     from evaluation.report import per_project_eval
     from scripts.train import _loader, make_collate_from_cfg
     from training.metrics import best_threshold

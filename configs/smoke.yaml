@@ -1,0 +1,32 @@
+# Fast offline config for wiring checks and the determinism gate. NOT a benchmark.
+#
+# Synthetic CWE templates are trivially separable, so any accuracy number produced under this
+# config is meaningless as a result -- but it exercises the entire real code path (tree-sitter
+# parse -> graph build -> word2vec -> GGNN -> readout -> trainer), which is exactly what a
+# determinism check needs to cover.
+extends: ../config.yaml
+
+project:
+  seed: 42
+
+data:
+  source: synthetic
+  synthetic:
+    enabled: true
+    samples_per_project: 120
+  max_nodes: 200
+
+training:
+  batch_size: 32
+  epochs: 3
+  early_stopping_patience: 3
+
+embedding:
+  word2vec_dim: 32
+  type_dim: 32
+  word2vec_epochs: 3
+  word2vec_min_count: 1
+
+model:
+  hidden_dim: 64
+  time_steps: 3

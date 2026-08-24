@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from data.dataset import DevignDataset, positive_rate
+from devign_data.dataset import DevignDataset, positive_rate
 from models.devign import build_model
 from training.trainer import make_train_config, train_model
 

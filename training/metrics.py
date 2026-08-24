@@ -11,6 +11,16 @@ from __future__ import annotations
 
 import numpy as np
 
+# Imported at MODULE level, not lazily inside the metric functions, and the reason is a hard
+# crash rather than style. sklearn pulls in pandas, which loads its own OpenMP/MKL runtime; on
+# Windows, doing that AFTER torch has initialised CUDA loads a second copy of libiomp into the
+# process and segfaults it. The lazy imports that used to live inside `prob_metrics` and
+# `best_threshold` fired exactly there -- at the first validation pass -- so training died a few
+# seconds into epoch 1 with no Python traceback. Importing here means it happens while
+# `training.trainer` is still being imported, long before any CUDA work.
+from sklearn.metrics import (average_precision_score, matthews_corrcoef,  # noqa: E402
+                             roc_auc_score)
+
 
 def binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     y_true = np.asarray(y_true).astype(int)
@@ -33,10 +43,18 @@ def binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     }
 
 
-def prob_metrics(y_true, probs, threshold: float = 0.5) -> dict[str, float]:
-    """`binary_metrics` at `threshold`, plus threshold-free AUC and MCC.
+def prob_metrics(y_true, probs, threshold: float = 0.5, split: str | None = None,
+                 fitted_on_split: str | None = None) -> dict[str, float]:
+    """`binary_metrics` at `threshold`, plus threshold-free AUC, PR-AUC and MCC.
 
-    AUC and MCC are what model selection should key on; accuracy/F1 are what the paper reports.
+    AUC and MCC are what model selection should key on; accuracy/F1 are what the paper reports;
+    PR-AUC is the one that stays informative when the positive class is rare, which is the Q4
+    imbalanced setting.
+
+    `split` names the split being scored and `fitted_on_split` the split the threshold was tuned
+    on. When they are equal the numbers are optimistically biased -- the threshold saw these very
+    labels -- so they are tagged rather than silently returned as if unbiased. `require_unbiased`
+    turns that tag into a hard error at the point a number would enter a results table.
     """
     y_true = np.asarray(y_true).astype(int)
     probs = np.asarray(probs, dtype=np.float64)
@@ -48,13 +66,70 @@ def prob_metrics(y_true, probs, threshold: float = 0.5) -> dict[str, float]:
     if len(np.unique(y_true)) < 2:
         out["auc"] = 50.0
         out["mcc"] = 0.0
+        # With one class, average precision degenerates to the positive rate (1.0 or 0.0).
+        out["pr_auc"] = float(y_true.mean()) * 100.0
     else:
-        from sklearn.metrics import matthews_corrcoef, roc_auc_score
         out["auc"] = float(roc_auc_score(y_true, probs)) * 100.0
+        out["pr_auc"] = float(average_precision_score(y_true, probs)) * 100.0
         out["mcc"] = float(matthews_corrcoef(y_true, preds)) * 100.0
 
     out["threshold"] = float(threshold)
+    out["split"] = split
+    out["fitted_on_split"] = fitted_on_split
     return out
+
+
+def majority_baseline(y_true, split: str | None = None) -> dict[str, float]:
+    """The constant predictor that always answers with the majority class.
+
+    Printed beside every model number because on a 43-51% positive corpus it is the number that
+    says whether a model learned anything at all: 59.07 accuracy on QEMU's split is not a result,
+    it is the class balance.
+    """
+    y_true = np.asarray(y_true).astype(int)
+    if y_true.size == 0:
+        return {"accuracy": 0.0, "f1": 0.0, "auc": 50.0, "pr_auc": 0.0, "split": split}
+    majority = int(y_true.mean() >= 0.5)
+    out = binary_metrics(y_true, np.full_like(y_true, majority))
+    # A constant predictor has no ranking, so ROC-AUC is exactly chance and average precision is
+    # the positive rate, whichever constant it emits.
+    out["auc"] = 50.0
+    out["pr_auc"] = float(y_true.mean()) * 100.0
+    out["mcc"] = 0.0
+    out["threshold"] = 0.5
+    out["split"] = split
+    out["fitted_on_split"] = None
+    out["predicts"] = majority
+    return out
+
+
+class ThresholdLeakage(ValueError):
+    """Raised when a tuned-threshold metric is about to be reported on its own fitting split."""
+
+
+def require_unbiased(metrics: dict, context: str = "") -> dict:
+    """Gate every number on its way into a results table.
+
+    The bug this exists to make impossible: `train_model` tunes the decision threshold on
+    validation and then scores validation at it. `scripts/train.py` avoids reporting that when a
+    test split exists, but the `paper_split: true` path has no test split and reported the tuned
+    validation number directly -- a metric tuned on the split it is reported on, which is exactly
+    the thing that inflates a reproduction over the work it is being compared to.
+
+    Returns `metrics` unchanged when it is safe, so it can be used inline.
+    """
+    split = metrics.get("split")
+    fitted = metrics.get("fitted_on_split")
+    if split is not None and fitted is not None and split == fitted:
+        where = f" ({context})" if context else ""
+        raise ThresholdLeakage(
+            f"refusing to report tuned-threshold metrics on split {split!r}{where}: the "
+            f"threshold {metrics.get('threshold')} was fitted on that same split, so accuracy "
+            f"and F1 here are optimistically biased.\n"
+            f"Either report this split at the fixed 0.5 threshold, or apply the tuned threshold "
+            f"to a split the tuning never saw (set data.paper_split: false so a test split "
+            f"exists).")
+    return metrics
 
 
 def best_threshold(y_true, probs, objective: str = "f1_guarded") -> float:
@@ -94,7 +169,6 @@ def best_threshold(y_true, probs, objective: str = "f1_guarded") -> float:
     candidates = np.unique(np.concatenate([[0.5], (uniq[:-1] + uniq[1:]) / 2.0]))
 
     def _mcc(preds) -> float:
-        from sklearn.metrics import matthews_corrcoef
         return float(matthews_corrcoef(y_true, preds))
 
     if objective == "f1_guarded":

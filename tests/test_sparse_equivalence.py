@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 import torch
 
-from data.dataset import GraphSample, dedupe_edges, make_collate_fn
-from data.graph_builder import EDGE_TYPES
+from devign_data.dataset import GraphSample, dedupe_edges, make_collate_fn
+from devign_data.graph_builder import EDGE_TYPES
 from models.ggnn import GatedGraphRecurrentLayer
 
 CODE_DIM = 8
@@ -41,8 +41,29 @@ def _batch(sizes, **collate_kw):
     return dense, sparse
 
 
+def _run_sparse(layer, batch, x=None, fast: bool = False):
+    """Forward the sparse path, passing the segment lengths the collate function produced.
+
+    `fast=False` selects the deterministic segment reduction, `fast=True` the atomic scatter.
+    Both must equal the dense path; only the first is reproducible bitwise.
+    """
+    return layer(batch.code_feat if x is None else x, None, batch.mask,
+                 edge_index=batch.edge_index, edge_type=batch.edge_type,
+                 edge_norm=batch.edge_norm,
+                 seg_lengths_dst=batch.seg_lengths_dst,
+                 seg_lengths_dst_type=batch.seg_lengths_dst_type,
+                 fast=fast)
+
+
 @pytest.mark.parametrize("aggregation", ["sum", "mean", "max", "concat"])
-def test_sparse_matches_dense(aggregation):
+@pytest.mark.parametrize("fast", [False, True], ids=["segment", "atomic"])
+def test_sparse_matches_dense(aggregation, fast):
+    """Both sparse accumulation paths reproduce the dense A_p matmul.
+
+    Parametrising over `fast` is the point: sorting edges by destination for the deterministic
+    path reorders the edge list, and a reordering that changed the RESULT would be a bug rather
+    than a rounding difference.
+    """
     torch.manual_seed(0)
     layer = GatedGraphRecurrentLayer(len(EDGE_TYPES), HIDDEN, time_steps=3,
                                      aggregation=aggregation)
@@ -52,13 +73,44 @@ def test_sparse_matches_dense(aggregation):
     x = dense.code_feat
     with torch.no_grad():
         h_dense = layer(x, dense.adj, dense.mask)
-        h_sparse = layer(x, None, sparse.mask,
-                         edge_index=sparse.edge_index, edge_type=sparse.edge_type,
-                         edge_norm=sparse.edge_norm)
+        h_sparse = _run_sparse(layer, sparse, x=x, fast=fast)
 
     assert h_dense.shape == h_sparse.shape
     assert torch.allclose(h_dense, h_sparse, atol=1e-5), \
         f"max abs diff {(h_dense - h_sparse).abs().max().item():.3e}"
+
+
+@pytest.mark.parametrize("aggregation", ["sum", "mean", "max", "concat"])
+def test_segment_path_is_bitwise_identical_across_runs(aggregation):
+    """Same input, same weights, repeated forwards -> BITWISE equal outputs.
+
+    `allclose` is not the assertion that matters here. Atomic float accumulation is accurate to
+    within tolerance every time and still returns different low bits on each call, which is
+    enough to make two same-seed training runs diverge into different models after a few thousand
+    steps. Only exact equality catches that.
+    """
+    torch.manual_seed(0)
+    layer = GatedGraphRecurrentLayer(len(EDGE_TYPES), HIDDEN, time_steps=3,
+                                     aggregation=aggregation)
+    layer.eval()
+    _, sparse = _batch([7, 13, 4])
+
+    with torch.no_grad():
+        reference = _run_sparse(layer, sparse)
+        for _ in range(8):
+            assert torch.equal(_run_sparse(layer, sparse), reference)
+
+
+def test_collate_sorts_edges_by_destination():
+    """The segment reduction is only correct if each node's in-edges are contiguous."""
+    _, sparse = _batch([9, 5, 12])
+    dst = sparse.edge_index[1]
+    assert torch.equal(dst, dst.sort(stable=True).values), "edges are not sorted by destination"
+    # Segment lengths must account for every edge, and cover every node slot.
+    assert int(sparse.seg_lengths_dst.sum()) == dst.numel()
+    assert sparse.seg_lengths_dst.numel() == sparse.mask.numel()
+    assert int(sparse.seg_lengths_dst_type.sum()) == dst.numel()
+    assert sparse.seg_lengths_dst_type.numel() == sparse.mask.numel() * len(EDGE_TYPES)
 
 
 def test_sparse_matches_dense_with_self_loops_and_norm():
@@ -70,9 +122,7 @@ def test_sparse_matches_dense_with_self_loops_and_norm():
 
     with torch.no_grad():
         h_dense = layer(dense.code_feat, dense.adj, dense.mask)
-        h_sparse = layer(sparse.code_feat, None, sparse.mask,
-                         edge_index=sparse.edge_index, edge_type=sparse.edge_type,
-                         edge_norm=sparse.edge_norm)
+        h_sparse = _run_sparse(layer, sparse)
     assert torch.allclose(h_dense, h_sparse, atol=1e-5), \
         f"max abs diff {(h_dense - h_sparse).abs().max().item():.3e}"
 
@@ -93,7 +143,26 @@ def test_padded_nodes_never_receive_messages():
     layer = GatedGraphRecurrentLayer(len(EDGE_TYPES), HIDDEN, time_steps=2, aggregation="sum")
     layer.eval()
     with torch.no_grad():
-        h = layer(sparse.code_feat, None, sparse.mask, edge_index=sparse.edge_index,
-                  edge_type=sparse.edge_type, edge_norm=sparse.edge_norm)
+        h = _run_sparse(layer, sparse)
     pad = ~sparse.mask
     assert h[pad].abs().max() == 0.0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.parametrize("aggregation", ["sum", "concat"])
+def test_segment_path_is_bitwise_identical_on_cuda(aggregation):
+    """The CPU identity test above cannot catch this: atomics are only reordered on GPU.
+
+    This is the test that actually justifies the rewrite -- on CUDA, `index_add_` accumulates in
+    scheduler order, so the same forward run twice returns different low bits.
+    """
+    torch.manual_seed(0)
+    layer = GatedGraphRecurrentLayer(len(EDGE_TYPES), HIDDEN, time_steps=3,
+                                     aggregation=aggregation).cuda().eval()
+    _, sparse = _batch([64, 128, 96])
+    sparse = sparse.to("cuda")
+
+    with torch.no_grad():
+        reference = _run_sparse(layer, sparse)
+        for _ in range(8):
+            assert torch.equal(_run_sparse(layer, sparse), reference)

@@ -4,9 +4,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from data.graph_builder import EDGE_TYPES, build_graph
-from data.dataset import GraphSample, make_collate_fn
-from data.word2vec_embed import (NodeFeaturizer, TypeVocab, build_corpus,
+from devign_data.graph_builder import EDGE_TYPES, build_graph
+from devign_data.dataset import GraphSample, make_collate_fn
+from devign_data.word2vec_embed import (NodeFeaturizer, TypeVocab, build_corpus,
                                 train_word2vec)
 from models.devign import build_model
 from training.utils import load_config
@@ -45,7 +45,7 @@ def test_max_nodes_filter():
 
 
 def test_parse_error_filter_rejects_grossly_broken_code():
-    from data.graph_builder import build_graph as _bg
+    from devign_data.graph_builder import build_graph as _bg
     malformed = "int broken(int a { return a +++ ; ]]] }"
     assert _bg(malformed) is None
     assert _bg(malformed, drop_parse_errors=False) is not None
@@ -56,7 +56,7 @@ def test_parse_filter_keeps_code_with_a_localised_error():
 
     Rejecting on any ERROR node discarded a measured 12.1% of the real corpus (~3,300 functions).
     """
-    from data.graph_builder import build_graph as _bg
+    from devign_data.graph_builder import build_graph as _bg
     # Realistic FFmpeg/QEMU shape: unknown attribute macro, otherwise perfectly ordinary C.
     src = """
     static av_cold int decode_init(AVCodecContext *avctx) {
@@ -75,7 +75,7 @@ def test_parse_filter_keeps_code_with_a_localised_error():
 
 
 def test_parse_info_reports_error_extent():
-    from data.parser import flatten_ast
+    from devign_data.parser import flatten_ast
     nodes, _, info = flatten_ast("int ok(void) { return 1; }", return_error=True)
     assert nodes
     assert info.has_function_definition

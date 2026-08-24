@@ -1,11 +1,11 @@
 """Tests for split logic and the real-dataset loader, added when synthetic-only data was
-replaced with the Devign authors' released dataset (see data/hf_devign.py, data/prepare.py)."""
+replaced with the Devign authors' released dataset (see devign_data/hf_devign.py, devign_data/prepare.py)."""
 from __future__ import annotations
 
 import pytest
 
-from data.download import RawFunction, load_devign_parquet_dir, load_real
-from data.prepare import (codexglue_split, commit_disjoint_split, split_functions,
+from devign_data.download import RawFunction, load_devign_parquet_dir, load_real
+from devign_data.prepare import (codexglue_split, commit_disjoint_split, split_functions,
                           stratified_split3)
 
 

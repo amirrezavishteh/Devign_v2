@@ -15,7 +15,7 @@ import os
 
 from training.train_baselines import (train_bilstm, train_cnn,
                                       train_metrics_xgboost)
-from training.utils import ensure_dir, load_config, resolve_device, set_seed
+from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
 
 BASELINES = {
     "bilstm": lambda cfg, dev, proj: train_bilstm(cfg, dev, attention=False, project=proj)[1],
@@ -35,7 +35,7 @@ def main():
     cfg = load_config(args.config)
     if args.epochs:
         cfg["training"]["epochs"] = args.epochs
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     device = resolve_device(cfg["project"]["device"])
 
     projects = [args.project] if args.project else list(cfg["data"]["projects"]) + ["combined"]

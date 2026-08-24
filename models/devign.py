@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from data.dataset import GraphBatch
+from devign_data.dataset import GraphBatch
 from models.conv_module import ConvModule, prior_logit
 from models.ggnn import GatedGraphRecurrentLayer
 from models.node_init import NodeInitEmbedding
@@ -20,19 +20,25 @@ from models.node_init import NodeInitEmbedding
 class _Trunk(nn.Module):
     def __init__(self, code_dim: int, type_vocab_size: int, type_dim: int,
                  num_edge_types: int, hidden_dim: int, time_steps: int, aggregation: str,
-                 type_init_std: float = 1.0):
+                 type_init_std: float = 1.0, fast: bool = False):
         super().__init__()
         self.node_init = NodeInitEmbedding(code_dim, type_vocab_size, type_dim, type_init_std)
         self.init_dim = self.node_init.out_dim
         assert hidden_dim >= self.init_dim, "hidden_dim (z) must be >= annotation dim d"
         self.ggnn = GatedGraphRecurrentLayer(num_edge_types, hidden_dim, time_steps, aggregation)
+        # Atomic (non-deterministic) message accumulation. Faster, and unusable for any reported
+        # number -- see GatedGraphRecurrentLayer._propagate_sparse.
+        self.fast = fast
 
     def forward(self, batch: GraphBatch):
         x = self.node_init(batch.code_feat, batch.type_ids)   # [B, M, d]
         x = x * batch.mask.float().unsqueeze(-1)
         H = self.ggnn(x, batch.adj, batch.mask,               # [B, M, z]
                       edge_index=batch.edge_index, edge_type=batch.edge_type,
-                      edge_norm=batch.edge_norm)
+                      edge_norm=batch.edge_norm,
+                      seg_lengths_dst=batch.seg_lengths_dst,
+                      seg_lengths_dst_type=batch.seg_lengths_dst_type,
+                      fast=self.fast)
         return H, x
 
 

@@ -9,14 +9,14 @@ import argparse
 import json
 import os
 
-from data.dataset import positive_rate
-from data.graph_builder import EDGE_TYPES
+from devign_data.dataset import positive_rate
+from devign_data.graph_builder import EDGE_TYPES
 from evaluation.ablation import run_single_edge
 from evaluation.report import format_ablation
 from models.devign import build_model
 from scripts.train import load_graph_loaders
 from training.trainer import make_train_config, train_model
-from training.utils import ensure_dir, load_config, resolve_device, set_seed
+from training.utils import ensure_dir, load_config, resolve_device, seed_from_config
 
 # Single artifact path for this study, also used by scripts.reproduce so the two entry points
 # never disagree on where the composite/ablation results live.
@@ -60,7 +60,7 @@ def main():
     ap.add_argument("--project", default=None, help="restrict to one project (default: Combined)")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    set_seed(cfg["project"]["seed"])
+    seed_from_config(cfg)
     device = resolve_device(cfg["project"]["device"])
 
     results = run_ablation(cfg, args.models, device, epochs=args.epochs, project=args.project)
