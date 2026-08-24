@@ -94,14 +94,12 @@ def load_arms(directory: str, split_key: str) -> dict:
             # hazard: a 3-seed Phase 1 run named devign_codexglue.json and a 5-seed Phase 3 run
             # named devign.json both reduce to "devign", and the table would show one of them with
             # no indication which.
-            raise SystemExit(
-                f"two files map to the same arm {key!r}:
-"
-                f"  {arms[key]['path']}  ({len(arms[key]['seeds'])} seeds)
-"
-                f"  {path}  ({len(r.get('seeds', []))} seeds)
-"
-                f"Move or delete one -- an arm must come from exactly one run.")
+            raise SystemExit("\n".join([
+                f"two files map to the same arm {key!r}:",
+                f"  {arms[key]['path']}  ({len(arms[key]['seeds'])} seeds)",
+                f"  {path}  ({len(r.get('seeds', []))} seeds)",
+                "Move or delete one -- an arm must come from exactly one run.",
+            ]))
         arms[key] = {
             "label": key,
             "values": {m: block.get(m, {}).get("values", []) for m in METRICS},
