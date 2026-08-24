@@ -20,6 +20,22 @@
 # hyperparameters and is WEAKER than the paper's; models/metrics_xgboost.py now says so loudly
 # rather than falling back in silence.
 
+#
+# SECOND VERIFIED ENVIRONMENT (the A100 server where reported numbers are produced).
+# conda env `devigen`, Python 3.10.12, 2x A100-SXM4-80GB, driver 570.86.10:
+#     torch 2.5.1 (cu124)   numpy 1.26.4      gensim 4.3.3      scipy 1.13.1
+#     scikit-learn 1.5.2    xgboost 2.1.4     pandas 2.2.3      pyarrow 17.0.0
+#     tree-sitter 0.26.0    tree-sitter-c 0.24.2   scikit-optimize 0.10.2
+#
+# It differs from the pins below and is deliberately NOT forced to match. What must match is the
+# GRAMMAR (tree-sitter-c 0.24.2), because node types are half of every node feature; the
+# tree-sitter RUNTIME does not affect them, verified by tests/test_grammar_canary.py producing an
+# identical hash and node count under 0.25.2 and 0.26.0. Everything else on that list changes
+# arithmetic only through library-level numerics, which the per-run manifest records.
+#
+# Results from the two machines are therefore comparable in protocol but should not be pooled
+# into one mean without checking manifests -- use training.manifest.compare_manifests.
+
 anyio==4.9.0
 certifi==2025.8.3
 click==8.4.2

@@ -30,7 +30,7 @@ dependencies = [
     # behaviourally by tests/test_grammar_canary.py, which hashes the grammar's output over a
     # fixed canary function -- a stricter guard than a commit SHA, and one the PyPI wheel can
     # actually support.
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-c>=0.21.0,<0.25.0",
 
     "scikit-learn>=1.3.0,<1.7.0",

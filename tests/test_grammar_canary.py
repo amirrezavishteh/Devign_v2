@@ -56,10 +56,20 @@ def _type_multiset_hash(source: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def test_grammar_versions_are_the_verified_pair():
-    """The runtime/grammar pair the reproduction was measured on."""
-    assert md.version("tree-sitter") == "0.25.2"
+def test_grammar_package_is_pinned():
+    """The GRAMMAR is what defines the node-type vocabulary, so it is pinned exactly.
+
+    The runtime deliberately is not. Measured across tree-sitter 0.25.2 (laptop) and 0.26.0
+    (A100 server) against the same tree-sitter-c 0.24.2, the canary hash and node count below are
+    bit-for-bit identical -- the runtime parses, the grammar decides what the node types are
+    called. Asserting an exact runtime would have failed a perfectly valid environment for a
+    reason that cannot move a number, which is worse than not checking it at all: it trains people
+    to edit the test until it passes.
+    """
     assert md.version("tree-sitter-c") == "0.24.2"
+    # Runtime floor is real: ABI 15 grammars need >= 0.23 to load at all.
+    major, minor = (int(x) for x in md.version("tree-sitter").split(".")[:2])
+    assert (major, minor) >= (0, 23), f"tree-sitter runtime too old for an ABI-15 grammar"
 
 
 def test_canary_node_type_vocabulary_is_unchanged():

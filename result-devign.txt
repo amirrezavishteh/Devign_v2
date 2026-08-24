@@ -1,0 +1,36 @@
+✓ Session saved
+(devigen) amirreza_vishteh@dmla100:~/Devign_v2$ cd ~/Devign_v2 && source /media/external20/amirreza_vishteh/anaconda3/etc/profile.d/conda.sh && conda activate devigen && rm -rf data/processed artifacts && CUDA_VISIBLE_DEVICES=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python -m scripts.prepare_data --config config_a100.yaml
+[prepare] 27258 raw functions (12424 vulnerable)
+[prepare] graphs built: 20657 kept (75.8%), 6601 dropped (24.2%)
+[prepare]     5212 (19.1%)  >500 nodes (paper's filter)
+[prepare]     1389 ( 5.1%)  unparseable (no function_definition, or >20% ERROR span)
+[prepare] word2vec vocab: 40829 tokens, dim 100
+[prepare] type vocab: 191 types
+[prepare] split (random): 15492 train / 2581 val / 2584 test
+[prepare] code features standardized on 15492 train graphs (mean |mu| 0.153, mean sigma 0.344)
+[prepare] done.
+[prepare_data] summary: {'type_vocab_size': 191, 'code_dim': 100, 'num_edge_types': 7, 'train_samples': 15492, 'val_samples': 2581, 'test_samples': 2584}
+(devigen) amirreza_vishteh@dmla100:~/Devign_v2$ CUDA_VISIBLE_DEVICES=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python -m scripts.train --model devign --project qemu --config config_a100.yaml
+[train] model=devign project=qemu device=cuda
+[train] devign/qemu: 11113 train / 1835 val graphs
+  epoch   1 | loss 0.6697 | val acc 59.46 f1 36.52 | spread 0.636 | lr 1.00e-03 | best auc 58.82
+  epoch   2 | loss 0.6506 | val acc 60.16 f1 38.73 | spread 0.853 | lr 1.00e-03 | best auc 60.54
+  epoch   3 | loss 0.6381 | val acc 60.11 f1 38.80 | spread 0.979 | lr 1.00e-03 | best auc 62.13
+  epoch   4 | loss 0.6281 | val acc 61.85 f1 43.00 | spread 0.976 | lr 1.00e-03 | best auc 64.50
+  epoch   5 | loss 0.6121 | val acc 62.45 f1 27.55 | spread 0.997 | lr 1.00e-03 | best auc 64.50
+  epoch   6 | loss 0.5980 | val acc 63.22 f1 33.89 | spread 0.998 | lr 1.00e-03 | best auc 65.30
+  epoch   7 | loss 0.5802 | val acc 64.74 f1 43.89 | spread 0.993 | lr 1.00e-03 | best auc 67.47
+  epoch   9 | loss 0.5324 | val acc 64.09 f1 46.12 | spread 0.999 | lr 1.00e-03 | best auc 68.07
+  epoch  10 | loss 0.5168 | val acc 63.60 f1 50.74 | spread 1.000 | lr 1.00e-03 | best auc 68.54
+  epoch  11 | loss 0.4823 | val acc 64.80 f1 51.06 | spread 1.000 | lr 1.00e-03 | best auc 69.25
+  epoch  13 | loss 0.4397 | val acc 64.09 f1 57.73 | spread 1.000 | lr 1.00e-03 | best auc 69.42
+  epoch  15 | loss 0.3835 | val acc 65.67 f1 49.03 | spread 1.000 | lr 1.00e-03 | best auc 69.42
+  epoch  20 | loss 0.2226 | val acc 64.31 f1 51.01 | spread 1.000 | lr 5.00e-04 | best auc 69.42
+  epoch  25 | loss 0.1067 | val acc 64.20 f1 52.84 | spread 1.000 | lr 2.50e-04 | best auc 69.42
+  epoch  30 | loss 0.0607 | val acc 62.78 f1 53.82 | spread 1.000 | lr 2.50e-04 | best auc 69.42
+  epoch  35 | loss 0.0287 | val acc 63.00 f1 53.52 | spread 1.000 | lr 1.25e-04 | best auc 69.42
+  epoch  40 | loss 0.0188 | val acc 63.00 f1 53.90 | spread 1.000 | lr 6.25e-05 | best auc 69.42
+  early stopping at epoch 43 (no improvement for 30)
+  restored best (auc 69.42) | threshold 0.486 -> val acc 64.09 f1 58.32 auc 69.42
+[train] best val: acc 64.09 f1 58.32 auc 69.42 @ threshold 0.486
+[train] held-out test: acc 63.90 f1 57.12 auc 69.04
