@@ -404,26 +404,52 @@ artifacts/    RESULTS.md, IDEA_EVAL.md (weights/JSON gitignored, markdown tracke
 
 ---
 
-## Status
+## Status — what has run, and what has not
 
 | phase | state |
 |---|---|
-| **0 — runnable + deterministic** | done. 132 tests green on both machines; determinism gate PASSES on the A100 with real data |
-| **1 — reproduce and report** | done. All five deliverables |
-| **2 — implement Devign-MIL** | done. Operator, line spans, PrimeVul loader, localisation eval, H3 verified |
-| **3 — evaluate** | detection **complete**: all four arms at 5 seeds; localisation blocked on PrimeVul |
+| **0 — runnable + deterministic** | **complete.** 132 tests green on both machines; determinism gate PASSES on the A100 with real data |
+| **1 — reproduce and report** | **partial.** Devign and Ggrn done at 3–5 seeds; **the four Table-2 baselines and the per-project columns have not been run** |
+| **2 — implement Devign-MIL** | **complete.** Operator, line spans, PrimeVul loader, localisation eval, H3 verified |
+| **3 — evaluate** | **partial.** Detection complete (four arms × 5 seeds); localisation blocked on PrimeVul |
 
-### Open items
+> An earlier revision of this file recorded Phase 1 as "done, all five deliverables". That was
+> wrong. The five *sections* are written; two of them are empty inside — §1.3 of the brief asked
+> for six models on three project cells and this delivers two models on one. Corrected here rather
+> than quietly.
 
-- **Eq. 5 saturates at initialisation** (loss 24.6, every probability at 1.0). It nevertheless
-  trains to 67.03 ROC-AUC, only 1.55 behind the fixed Conv module, so the saturation is survivable
-  in the same way Eq. 9's collapse is. A node-count-normalised variant would still be the fairer
-  baseline; it deviates from the equation as written, so it is recorded rather than silently
-  applied. **Open decision, now lower-stakes than it looked.**
-- **PrimeVul not yet placed on the server** — blocks H2.
-- The T ∈ {4, 6, 8, 12} over-squashing sweep is implemented but not yet run. Median AST depth here
-  is 11 against the paper's T = 6, so the upper half of a typical tree is unreachable from its
-  leaves.
+### Not yet run
+
+Required by the reproduction brief:
+
+| item | why it matters |
+|---|---|
+| **4 Table-2 baselines** (3-layer BiLSTM, BiLSTM+Att, CNN, Metrics+XGBoost) | The paper's entire comparison is against these. Without them there is no Table 2 |
+| **Per-project QEMU / FFmpeg columns** | Every figure here is pooled Combined, so it is not directly comparable to *any* single paper cell |
+| **Random-split protocol** (`configs/a100_random.yaml`) | The brief's SECONDARY protocol, closest to the paper's Sec 3.3 |
+
+Phase 3 extensions:
+
+| item | why it matters |
+|---|---|
+| **Localisation (H2)** | The only remaining claim that would *distinguish* this work. Everything else confirms or corrects the paper; this is the new capability. Blocked on PrimeVul |
+| Three arms on the **commit-disjoint** split | Whether the readout ranking survives once leakage is removed |
+| **MIL k=4** ablation | Multi-head variant; k=1 is the headline |
+| **T ∈ {4, 6, 8, 12}** sweep | Median AST depth here is 11 against the paper's T = 6, so the upper half of a typical tree is unreachable from its leaves. If results improve with T, over-squashing is bounding them |
+| Per-CWE breakdown, qualitative page | Both need PrimeVul |
+
+Implemented in the repo but outside the four-phase brief: Q3 single-edge ablation, Q4 imbalanced +
+static-analyzer comparison (Table 3), Q5 unseen-commit holdout.
+
+### Open questions
+
+- **Eq. 5 saturates at initialisation** (loss 24.6, every probability at 1.0) yet still trains to
+  67.03 ROC-AUC, only 1.55 behind the fixed Conv module — so its bad start is survivable the same
+  way Eq. 9's is. A node-count-normalised variant remains the fairer baseline; it deviates from
+  the equation as written, so it is recorded rather than silently applied.
+- **Why MIL loses accuracy while tying on ranking** is not explained here. Equal AUC with a worse
+  accuracy means the threshold lands differently, not that the model knows less — but *why* the
+  attention readout produces a less separable operating point is unresolved.
 
 ---
 
