@@ -25,7 +25,7 @@ is quoted from the paper or from another reproduction. Full tables:
 
 | | accuracy | F1 | ROC-AUC | PR-AUC |
 |---|---|---|---|---|
-| **This repro** (Devign, CodeXGLUE test, 5 seeds) | 63.50 ± 0.83 | 56.27 ± 4.57 | 68.58 ± 0.88 | 63.32 ± 1.20 |
+| **This repro** (Devign, CodeXGLUE test, 5 seeds) | 63.50 ± 0.83 | 56.27 ± 4.57 | 68.58 ± 0.88 | 63.13 ± 1.09 |
 | Majority-class baseline | 56.05 | 0.00 | 50.00 | 43.95 |
 | Paper (QEMU column) | 74.33 | 73.07 | — | — |
 
@@ -98,17 +98,29 @@ gradient is a saturated sigmoid, not health.
 **Consequence for the paper's Q2** — *"does the Conv module beat flat summation?"* compares two
 badly-conditioned readouts, not a good one against a bad one.
 
-### 4. The Conv module's claimed advantage does not reproduce
+### 4. The Conv module beats flat summation — at a third the claimed size, and not on F1
 
-The paper's ablation claims the Conv module adds **+4.66 accuracy and +6.37 F1** over Ggrn.
-Measured pairwise per seed:
+5 seeds per arm, paired per seed. The paper's ablation claims **+4.66 accuracy and +6.37 F1**.
 
-| metric | seed 1 | seed 2 | seed 3 | mean | Devign wins |
-|---|---|---|---|---|---|
-| accuracy | +1.17 | +2.05 | −0.29 | +0.98 | 2/3 |
-| F1 | −2.59 | +5.73 | −1.93 | **+0.40** | **1/3** |
+| metric | Conv − Ggrn | Conv wins | per-seed |
+|---|---|---|---|
+| accuracy | **+1.61** | **5/5** | +1.85 +0.44 +2.98 +1.56 +1.22 |
+| ROC-AUC | **+1.55** | **5/5** | +1.91 +1.78 +1.97 +1.18 +0.92 |
+| PR-AUC | **+2.34** | **5/5** | +2.90 +3.25 +2.29 +2.56 +0.70 |
+| **F1** | **−1.47** | 2/5 | −6.14 +5.01 +3.91 −6.47 −3.68 |
 
-The sign flips across seeds on every metric.
+The direction of the paper's Q2 claim **holds** on accuracy, ROC-AUC and PR-AUC — consistently,
+on every seed. Two things do not:
+
+- **The magnitude is about a third of what is claimed**: +1.61 accuracy against +4.66.
+- **On F1 — the metric the paper headlines — the Conv module loses**, by 1.47 on average, with the
+  sign flipping across seeds.
+
+> **This corrects an earlier reading in this repository.** At 3 seeds the accuracy sign flipped
+> (2/3) and this was written up as "the advantage does not reproduce". At 5 seeds it does not flip
+> at all. The 3-seed result was a small-sample artifact, and it is exactly the failure mode the
+> ≥3-seed rule was meant to prevent but 3 seeds is not always enough to. The 5-seed numbers
+> supersede it.
 
 ### 5. The paper's own configuration scores higher F1 while being a worse classifier
 
@@ -124,25 +136,31 @@ It buys 9.51 points of recall for 6.06 of precision — over-predicting the posi
 exactly the trade F1 rewards. Every threshold-free measure says the ranking is worse. This is the
 case against selecting on F1@0.5, measured rather than asserted.
 
-### 6. Devign-MIL: ties on ranking, loses accuracy, far more stable
+### 6. Four readouts, one trunk, 5 seeds each
 
-5 seeds per arm, one trunk, verified identical config and split hashes:
+Held-out test at the validation-tuned threshold. Parameter counts within 0.1% for the three
+631k-parameter arms.
 
-| readout | accuracy | F1 | ROC-AUC | params |
+| readout | accuracy | F1 | ROC-AUC | PR-AUC |
 |---|---|---|---|---|
-| conv, `logit_affine` TRUE | **63.50 ± 0.83** | 56.27 ± **4.57** | 68.58 ± 0.88 | 631,410 |
-| **mil (k=1)** | 61.61 ± 0.70 | **58.47 ± 0.72** | 68.08 ± 0.59 | 630,785 |
+| sum (Eq. 5, Ggrn) | 61.89 ± 0.32 | 57.74 ± 1.66 | 67.03 ± 0.67 | 60.79 ± 1.50 |
+| conv, `logit_affine` **FALSE** ← paper as written | 62.27 ± 1.08 | 56.47 ± 2.07 | 68.16 ± 0.60 | 62.65 ± 0.55 |
+| **conv, `logit_affine` TRUE** ← the honest baseline | **63.50 ± 0.83** | 56.27 ± **4.57** | **68.58 ± 0.88** | **63.13 ± 1.09** |
+| **mil (k=1)** | 61.61 ± 0.70 | **58.47 ± 0.72** | 68.08 ± 0.59 | 62.39 ± 1.47 |
+| majority class | 56.05 | 0.00 | 50.00 | 43.95 |
 
-| metric | delta (MIL − Conv) | MIL wins | Cohen's d | reading |
+#### H1: not supported as stated
+
+| metric | MIL − Conv | MIL wins | Cohen's d | reading |
 |---|---|---|---|---|
 | ROC-AUC | −0.50 | 1/5 | −1.23 | tie |
 | PR-AUC | −0.74 | 2/5 | −0.44 | tie |
 | F1 | +2.20 | 3/5 | +0.45 | tie (sign flips) |
 | **accuracy** | **−1.89** | **0/5** | **−1.91** | **Conv wins, consistently** |
 
-**H1 is not supported as stated.** It predicted "matches or beats". On threshold-free ranking it
-matches; **on accuracy it loses 1.89 points on every one of five seeds**. The two readouts order
-the test set about equally well and differ in where their operating point lands.
+H1 predicted "matches or beats". On threshold-free ranking it matches; **on accuracy it loses
+1.89 points on every one of five seeds**. The two readouts order the test set about equally well
+and differ in where their operating point lands.
 
 **MIL is 6.3× more stable**, which was not hypothesised and is reported as an observation:
 
@@ -153,6 +171,24 @@ mil:   58.21  57.35  58.80  59.20  58.81     range  1.85,  std 0.72
 
 A single-seed comparison of these two arms could have reported anything from MIL +6.6 to MIL −4.0
 on F1 by seed choice alone.
+
+#### The `logit_affine` fix moves the operating point, not the model
+
+| metric | TRUE − FALSE | TRUE wins |
+|---|---|---|
+| accuracy | +1.23 | **5/5** |
+| ROC-AUC | +0.42 | 3/5 |
+| PR-AUC | +0.47 | 3/5 |
+| F1 | −0.20 | 2/5 |
+
+The Eq. 9 initialisation defect is real and measured (§3: 384× attenuation, every probability
+inside [0.4996, 0.5000], eight epochs at F1 = 0.00). But by early-stopping convergence the model
+has **escaped it on its own**: ranking quality with and without the affine is a tie (AUC +0.42,
+3/5 seeds). The affine buys a better-placed decision boundary, worth +1.23 accuracy consistently —
+not a better model.
+
+That is a real limit on how much the Eq. 9 finding explains. It costs the first several epochs and
+a slice of accuracy; it does not account for the gap to the paper's numbers.
 
 ### 7. Determinism was not free — and costs nothing
 
@@ -176,7 +212,7 @@ Fixed before Phase 3 ran ([`artifacts/IDEA_EVAL.md`](artifacts/IDEA_EVAL.md) his
 
 | | hypothesis | status |
 |---|---|---|
-| **H1** | MIL **matches or beats** the FIXED Conv module on detection | **partially confirmed** — ties on AUC/PR-AUC/F1, **loses accuracy 5/5 seeds** |
+| **H1** | MIL **matches or beats** the FIXED Conv module on detection | **not supported as stated** — ties on AUC/PR-AUC/F1, **loses accuracy 5/5 seeds** |
 | **H2** | Attention localises to source lines far better than chance and than the Conv module | *blocked on PrimeVul* |
 | **H3** | MIL needs no `logit_affine` rescue, being linear in the node embeddings | **confirmed** — trunk gradient 1.0× a linear control |
 
@@ -375,14 +411,15 @@ artifacts/    RESULTS.md, IDEA_EVAL.md (weights/JSON gitignored, markdown tracke
 | **0 — runnable + deterministic** | done. 132 tests green on both machines; determinism gate PASSES on the A100 with real data |
 | **1 — reproduce and report** | done. All five deliverables |
 | **2 — implement Devign-MIL** | done. Operator, line spans, PrimeVul loader, localisation eval, H3 verified |
-| **3 — evaluate** | detection: MIL + Conv complete (5 seeds), Ggrn + `affine FALSE` running; localisation blocked on PrimeVul |
+| **3 — evaluate** | detection **complete**: all four arms at 5 seeds; localisation blocked on PrimeVul |
 
 ### Open items
 
-- **Eq. 5 saturates at initialisation**, so the three-arm comparison currently measures MIL
-  against *two* degenerate baselines. A node-count-normalised variant would be the fair
-  comparison; it deviates from the equation as written, so it is recorded rather than silently
-  applied. **Open decision.**
+- **Eq. 5 saturates at initialisation** (loss 24.6, every probability at 1.0). It nevertheless
+  trains to 67.03 ROC-AUC, only 1.55 behind the fixed Conv module, so the saturation is survivable
+  in the same way Eq. 9's collapse is. A node-count-normalised variant would still be the fairer
+  baseline; it deviates from the equation as written, so it is recorded rather than silently
+  applied. **Open decision, now lower-stakes than it looked.**
 - **PrimeVul not yet placed on the server** — blocks H2.
 - The T ∈ {4, 6, 8, 12} over-squashing sweep is implemented but not yet run. Median AST depth here
   is 11 against the paper's T = 6, so the upper half of a typical tree is unreachable from its
