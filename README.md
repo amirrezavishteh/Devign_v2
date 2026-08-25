@@ -98,7 +98,35 @@ gradient is a saturated sigmoid, not health.
 **Consequence for the paper's Q2** — *"does the Conv module beat flat summation?"* compares two
 badly-conditioned readouts, not a good one against a bad one.
 
-### 4. The Conv module beats flat summation — at a third the claimed size, and not on F1
+### 4. Sequence baselines beat the graph model — the paper's Table 2 inverts
+
+All four Table-2 baselines, one run each, against our 5-seed Devign. Combined = QEMU + FFmpeg.
+
+| model | QEMU acc / F1 | FFmpeg acc / F1 | **Combined acc / F1** |
+|---|---|---|---|
+| 3-layer BiLSTM | 67.64 / 59.02 | 60.11 / 61.20 | **66.06 / 55.87** |
+| BiLSTM + Attention | 65.85 / 57.36 | 62.04 / 56.45 | **64.08 / 63.67** |
+| CNN | 69.57 / 59.59 | 60.63 / 56.08 | **67.70 / 56.25** |
+| Metrics + XGBoost | 61.58 / 14.01 | 52.55 / 48.67 | **60.36 / 18.15** |
+| **Devign (this repro, 5 seeds)** | — | — | **63.50 ± 0.83 / 56.27 ± 4.57** |
+| majority class | — | — | 56.05 / 0.00 |
+
+On Combined, **CNN beats Devign by 4.20 accuracy points and BiLSTM by 2.56**, and **BiLSTM +
+Attention beats it by 7.40 F1 points**. In the paper, Devign beats all four.
+
+A CNN over token sequences has no AST, no control-flow graph, no data-flow edges and no message
+passing. The entire premise of Devign is that composite program structure carries signal that
+sequence models miss. On this data, measured this way, it does not show up.
+
+*Caveats, and they are real:* the baselines are **one run each**, not seed means, so their numbers
+carry no error bar — while Devign's F1 spread alone is ±4.57, which is comparable to the F1 gap.
+The accuracy gaps (4.20, 2.56) are larger than Devign's accuracy spread (±0.83) and are the more
+solid of the two claims. Seeding the baselines is the obvious next step and has not been run.
+
+Note also `Metrics + XGBoost` at F1 14.01 on QEMU and 18.15 on Combined: it predicts the positive
+class almost never. Its accuracy of 60.36 is barely above the 56.05 majority floor.
+
+### 5. The Conv module beats flat summation — at a third the claimed size, and not on F1
 
 5 seeds per arm, paired per seed. The paper's ablation claims **+4.66 accuracy and +6.37 F1**.
 
@@ -122,7 +150,7 @@ on every seed. Two things do not:
 > ≥3-seed rule was meant to prevent but 3 seeds is not always enough to. The 5-seed numbers
 > supersede it.
 
-### 5. The paper's own configuration scores higher F1 while being a worse classifier
+### 6. The paper's own configuration scores higher F1 while being a worse classifier
 
 | metric | `paper_faithful` | `repo_default` | delta |
 |---|---|---|---|
@@ -136,7 +164,7 @@ It buys 9.51 points of recall for 6.06 of precision — over-predicting the posi
 exactly the trade F1 rewards. Every threshold-free measure says the ranking is worse. This is the
 case against selecting on F1@0.5, measured rather than asserted.
 
-### 6. Four readouts, one trunk, 5 seeds each
+### 7. Four readouts, one trunk, 5 seeds each
 
 Held-out test at the validation-tuned threshold. Parameter counts within 0.1% for the three
 631k-parameter arms.
@@ -190,14 +218,14 @@ not a better model.
 That is a real limit on how much the Eq. 9 finding explains. It costs the first several epochs and
 a slice of accuracy; it does not account for the gap to the paper's numbers.
 
-### 7. Determinism was not free — and costs nothing
+### 8. Determinism was not free — and costs nothing
 
 `index_add_` message passing was **bitwise different on 20 of 20 repeats** (6e-7 drift per
 forward). Replaced with a sorted segment reduction: exactly reproducible **and ~6% faster**
 (9.62 ± 0.04 ms vs 10.25 ± 0.06 ms). Two same-seed runs now produce byte-identical `metrics.json`
 **and** `model.pt` on the A100.
 
-### 8. A tuned threshold was being reported on its own split
+### 9. A tuned threshold was being reported on its own split
 
 `train_model` fitted the decision threshold on validation, then scored validation at it. On one run
 that gap was **F1 0.00 (unbiased) vs 68.97 (biased)** on the same split. Metrics now carry the
@@ -339,6 +367,40 @@ does not stop the others).
 
 ---
 
+## Inference — one command
+
+On the A100 (no SSH needed, you are already there):
+
+```bash
+python -m inference.predict --config configs/a100_codexglue.yaml   --model-dir artifacts/seed1/devign/combined --file yourfunc.c
+```
+
+```
+Prediction : VULNERABLE
+P(vuln)    : 0.6431  (threshold 0.476)
+Nodes      : 172
+Edges      : {'AST': 171, 'REV_AST': 171, 'CFG': 24, 'NCS': 98, ...}
+```
+
+Other forms:
+
+```bash
+--code "int f(){...}"          # inline instead of --file
+cat f.c | python -m inference.predict --config ... --model-dir ...   # stdin
+--model mil --model-dir artifacts/seed1/mil/combined                 # the MIL readout
+--threshold 0.5                                                      # override the tuned one
+```
+
+`--model-dir` is required for anything trained by `run_seeds`, which is every model behind the
+reported numbers — those land in `artifacts/seed<N>/<model>/<project>/`, not the default
+`artifacts/<model>/<project>/`. Point it at a wrong directory and the error lists the checkpoints
+that do exist.
+
+The threshold comes from that checkpoint's own `meta.json`, so the prediction uses the operating
+point it was selected at rather than an assumed 0.5.
+
+---
+
 ## Honesty machinery
 
 These are enforced in code, not by discipline:
@@ -409,7 +471,7 @@ artifacts/    RESULTS.md, IDEA_EVAL.md (weights/JSON gitignored, markdown tracke
 | phase | state |
 |---|---|
 | **0 — runnable + deterministic** | **complete.** 132 tests green on both machines; determinism gate PASSES on the A100 with real data |
-| **1 — reproduce and report** | **partial.** Devign and Ggrn done at 3–5 seeds; **the four Table-2 baselines and the per-project columns have not been run** |
+| **1 — reproduce and report** | **mostly complete.** Devign, Ggrn and all four Table-2 baselines run; per-project graph columns still training; baselines are single-seed |
 | **2 — implement Devign-MIL** | **complete.** Operator, line spans, PrimeVul loader, localisation eval, H3 verified |
 | **3 — evaluate** | **partial.** Detection complete (four arms × 5 seeds); localisation blocked on PrimeVul |
 
@@ -424,7 +486,7 @@ Required by the reproduction brief:
 
 | item | why it matters |
 |---|---|
-| **4 Table-2 baselines** (3-layer BiLSTM, BiLSTM+Att, CNN, Metrics+XGBoost) | The paper's entire comparison is against these. Without them there is no Table 2 |
+| **Seeded baselines** | The four Table-2 baselines have now run, but at **one seed each**, so they carry no error bar. Their accuracy lead over Devign exceeds its spread; the F1 lead does not |
 | **Per-project QEMU / FFmpeg columns** | Every figure here is pooled Combined, so it is not directly comparable to *any* single paper cell |
 | **Random-split protocol** (`configs/a100_random.yaml`) | The brief's SECONDARY protocol, closest to the paper's Sec 3.3 |
 
