@@ -11,6 +11,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import os
 import sys
 
@@ -22,14 +24,39 @@ from devign_data.graph_builder import EDGE_TYPES, build_graph
 from devign_data.word2vec_embed import NodeFeaturizer
 from models.devign import build_model
 from scripts.train import artifact_dir, load_threshold, make_collate_from_cfg
-from training.utils import load_config, resolve_device
+from training.utils import load_config, resolve_device_from_config
+
+
+def _suggest_model_dirs(cfg: dict, model_name: str) -> str:
+    """List directories that actually contain a checkpoint, so the error is actionable."""
+    root = cfg["project"]["artifacts_dir"]
+    found = sorted(os.path.dirname(p) for p in
+                   glob.glob(os.path.join(root, "**", "model.pt"), recursive=True))
+    if not found:
+        return "\n".join([
+            f"No checkpoints found under {root}/. Train one first:",
+            f"    python -m scripts.train --model {model_name}",
+        ])
+    lines = ["Available trained models:"]
+    lines += [f"    --model-dir {d}" for d in found[:12]]
+    if len(found) > 12:
+        lines.append(f"    ... and {len(found) - 12} more")
+    return "\n".join(lines)
 
 
 class DevignPredictor:
     def __init__(self, config_path="config.yaml", model_name="devign", device=None,
-                 project="combined"):
+                 project="combined", model_dir=None):
+        """`model_dir` points straight at a directory holding model.pt and meta.json.
+
+        Without it the model is looked up under `<artifacts_dir>/<model>/<project>/`, which is
+        where a single `scripts.train` run writes. Seed sweeps write to
+        `<artifacts_dir>/seed<N>/<model>/<project>/` instead, so every model produced by
+        `run_seeds` -- which is every model behind the reported numbers -- was unreachable from
+        this CLI. Rather than make the caller hand-edit a config, name the directory.
+        """
         self.cfg = load_config(config_path)
-        self.device = device or resolve_device(self.cfg["project"]["device"])
+        self.device = device or resolve_device_from_config(self.cfg)
         proc = self.cfg["data"]["processed_dir"]
         self.featurizer = NodeFeaturizer.load(os.path.join(proc, "featurizer"))
         self.edge_types = EDGE_TYPES
@@ -39,17 +66,23 @@ class DevignPredictor:
         self.model = build_model(
             model_name, self.cfg, code_dim=self.cfg["embedding"]["word2vec_dim"],
             type_vocab_size=len(self.featurizer.type_vocab), num_edge_types=len(self.edge_types))
-        model_path = os.path.join(artifact_dir(self.cfg, model_name, project), "model.pt")
+        resolved_dir = model_dir or artifact_dir(self.cfg, model_name, project)
+        model_path = os.path.join(resolved_dir, "model.pt")
         if not os.path.exists(model_path):
             raise FileNotFoundError(
-                f"No trained model at {model_path}. Train one first, e.g.\n"
-                f"    python -m scripts.train --model {model_name} --project {project}\n"
-                f"or pass --project with one of the projects you did train.")
+                f"No trained model at {model_path}.\n"
+                + _suggest_model_dirs(self.cfg, model_name))
         self.model.load_state_dict(torch.load(model_path, map_location=self.device,
                                               weights_only=True))
         self.model.to(self.device).eval()
         # The operating point chosen on validation during training, not an assumed 0.5.
-        self.threshold = load_threshold(self.cfg, model_name, project)
+        self.model_dir = resolved_dir
+        meta_path = os.path.join(resolved_dir, "meta.json")
+        if os.path.exists(meta_path):
+            with open(meta_path) as fh:
+                self.threshold = float(json.load(fh).get("threshold", 0.5))
+        else:
+            self.threshold = load_threshold(self.cfg, model_name, project)
 
     @torch.no_grad()
     def predict(self, source: str, threshold: float | None = None) -> dict:
@@ -84,6 +117,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model", default="devign")
+    ap.add_argument("--model-dir", default=None,
+                    help="directory holding model.pt and meta.json; overrides --project lookup. "
+                         "Seed sweeps write to artifacts/seed<N>/<model>/<project>/")
     ap.add_argument("--project", default="combined",
                     help="which trained model to load (default: the pooled Combined model)")
     ap.add_argument("--file", default=None)
@@ -104,7 +140,8 @@ def main():
         print("No source provided.")
         sys.exit(1)
 
-    predictor = DevignPredictor(args.config, args.model, project=args.project)
+    predictor = DevignPredictor(args.config, args.model, project=args.project,
+                                model_dir=args.model_dir)
     result = predictor.predict(source, threshold=args.threshold)
     if result.get("error"):
         print(f"Error: {result['error']}")
