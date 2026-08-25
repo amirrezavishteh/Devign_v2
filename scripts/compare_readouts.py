@@ -32,10 +32,16 @@ METRICS = ("accuracy", "f1", "auc", "pr_auc")
 # operator. Keys are the filename stems run_seeds writes.
 PREFERRED_ORDER = [
     ("ggrn", "sum (Eq. 5, Ggrn)"),
-    ("devign_paper_faithful", "conv, logit_affine FALSE (paper as written)"),
+    # `devign_affine_off` reverses ONE knob: the affine on the graph-level logit.
+    # `devign_paper_faithful` reverses SIX at once (affine, lr, schedule, selection metric,
+    # threshold tuning, node features, conv axis, readout), so it cannot attribute an effect to
+    # any of them. These were mislabelled as the same arm, which made the paper's readout look
+    # 4.4 accuracy points worse than it is.
+    ("devign_affine_off", "conv, logit_affine FALSE (Eq. 9 as written)"),
     ("devign", "conv, logit_affine TRUE (fair baseline)"),
     ("mil", "mil (k=1)"),
     ("mil_k4", "mil (k=4)"),
+    ("devign_paper_faithful", "paper_faithful (SIX deviations reversed, not comparable)"),
 ]
 
 
@@ -125,17 +131,18 @@ def report(arms: dict, split_key: str, baseline_key: str) -> dict:
     ordered += [(k, k) for k in sorted(arms) if k not in dict(PREFERRED_ORDER)]
 
     print(f"\nDetection comparison ({split_key})")
-    print("=" * 92)
-    print("%-44s%-16s%-16s%-16s" % ("readout", "accuracy", "F1", "ROC-AUC"))
-    print("-" * 92)
+    print("=" * 106)
+    print("%-52s %5s  %-16s%-16s%-16s" % ("readout", "seeds", "accuracy", "F1", "ROC-AUC"))
+    print("-" * 106)
     for key, label in ordered:
         s = arms[key]["summary"]
-        print("%-44s%-16s%-16s%-16s" % (label, _fmt(s["accuracy"]), _fmt(s["f1"]),
-                                        _fmt(s["auc"])))
+        print("%-52s %5d  %-16s%-16s%-16s" % (label, len(arms[key]["seeds"]),
+                                             _fmt(s["accuracy"]), _fmt(s["f1"]),
+                                             _fmt(s["auc"])))
     maj = next((a["majority"] for a in arms.values() if a.get("majority")), None)
     if maj:
-        print("%-44s%-16s%-16s%-16s" % ("majority class", f"{maj['accuracy']:.2f}",
-                                        f"{maj['f1']:.2f}", f"{maj['auc']:.2f}"))
+        print("%-52s %5s  %-16s%-16s%-16s" % ("majority class", "-", f"{maj['accuracy']:.2f}",
+                                             f"{maj['f1']:.2f}", f"{maj['auc']:.2f}"))
     print()
 
     if baseline_key not in arms:
@@ -146,7 +153,7 @@ def report(arms: dict, split_key: str, baseline_key: str) -> dict:
     base = arms[baseline_key]
     print(f"Paired tests against {baseline_key!r} "
           f"(the FIXED conv module -- beating the broken one is not a finding)")
-    print("=" * 92)
+    print("=" * 106)
     print("%-22s%-10s%10s%10s%10s%10s%10s" % ("arm", "metric", "delta", "wins", "p", "p_floor",
                                               "cohen d"))
     print("-" * 92)
