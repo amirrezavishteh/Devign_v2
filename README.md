@@ -16,9 +16,13 @@ The work has three parts:
 Everything below is measured in this repository and regenerable by the command beside it. Nothing
 is quoted from the paper or from another reproduction.
 
-📄 **[`METHOD.md`](METHOD.md) — the method and results as a single narrative.** Start there if you
-want the argument rather than the operating manual. Full tables live in
-[`artifacts/RESULTS.md`](artifacts/RESULTS.md) and [`artifacts/IDEA_EVAL.md`](artifacts/IDEA_EVAL.md).
+📄 **[`METHOD.md`](METHOD.md)** — the method and results as a single narrative. Start here for the
+argument rather than the operating manual.
+📄 **[`CRITIQUE.md`](CRITIQUE.md)** — the paper's shortcomings and limitations, each backed by a
+measurement, plus a proposed scientific solution.
+
+Full tables live in [`artifacts/RESULTS.md`](artifacts/RESULTS.md) and
+[`artifacts/IDEA_EVAL.md`](artifacts/IDEA_EVAL.md).
 
 ---
 
