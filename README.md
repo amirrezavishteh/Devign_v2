@@ -14,7 +14,10 @@ The work has three parts:
    yields statement-level localisation for free.
 
 Everything below is measured in this repository and regenerable by the command beside it. Nothing
-is quoted from the paper or from another reproduction. Full tables:
+is quoted from the paper or from another reproduction.
+
+📄 **[`METHOD.md`](METHOD.md) — the method and results as a single narrative.** Start there if you
+want the argument rather than the operating manual. Full tables live in
 [`artifacts/RESULTS.md`](artifacts/RESULTS.md) and [`artifacts/IDEA_EVAL.md`](artifacts/IDEA_EVAL.md).
 
 ---

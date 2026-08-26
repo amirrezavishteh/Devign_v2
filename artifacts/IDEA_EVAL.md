@@ -3,8 +3,9 @@
 Evaluates gated attention MIL pooling as a replacement for the Devign Conv module (Eq. 6–9),
 measured against the Phase 1 reproduction in [`RESULTS.md`](RESULTS.md).
 
-**Status: Phase 3 running.** Sections marked *not measured* are not yet run. Nothing here is
-estimated, extrapolated, or carried across from a different configuration.
+**Status: detection complete, localisation blocked on PrimeVul.** Sections marked *not measured*
+are not yet run. Nothing here is estimated, extrapolated, or carried across from a different
+configuration.
 
 ---
 
@@ -48,17 +49,17 @@ loss 24.6 on a 43.2%-positive split. Its large gradient is a saturated sigmoid, 
 
 ---
 
-## 3.1 Detection — measured (MIL and Conv complete; Ggrn and `affine FALSE` running)
+## 3.1 Detection — complete, all four arms at 5 seeds
 
 One trunk, **5 seeds per arm**, CodeXGLUE split, held-out test at the validation-tuned threshold.
 All seeds share identical config, train-split and test-split hashes, on `cuda:1` with TF32 off.
 
 | readout | accuracy | F1 | ROC-AUC | PR-AUC | params |
 |---|---|---|---|---|---|
-| **conv, `logit_affine` TRUE** (the honest baseline) | **63.50 ± 0.83** | 56.27 ± **4.57** | 68.58 ± 0.88 | 63.32 ± 1.20 | 631,410 |
-| **mil (k=1)** | 61.61 ± 0.70 | **58.47 ± 0.72** | 68.08 ± 0.59 | 62.58 ± 0.99 | 630,785 |
-| sum (Eq. 5, Ggrn) | *running* | | | | 553,331 |
-| conv, `logit_affine` FALSE ← paper as written | *running* | | | | 631,410 |
+| sum (Eq. 5, Ggrn) | 61.89 ± 0.32 | 57.74 ± 1.66 | 67.03 ± 0.67 | 60.79 ± 1.50 | 553,331 |
+| conv, `logit_affine` FALSE ← Eq. 9 as written | 62.27 ± 1.08 | 56.47 ± 2.07 | 68.16 ± 0.60 | 62.65 ± 0.55 | 631,410 |
+| **conv, `logit_affine` TRUE** (the honest baseline) | **63.50 ± 0.83** | 56.27 ± **4.57** | **68.58 ± 0.88** | **63.13 ± 1.09** | 631,410 |
+| **mil (k=1)** | 61.61 ± 0.70 | **58.47 ± 0.72** | 68.08 ± 0.59 | 62.39 ± 1.47 | 630,785 |
 | majority class | 56.05 | 0.00 | 50.00 | 43.95 | — |
 
 Paired per-seed, MIL − Conv:
@@ -98,12 +99,18 @@ once its optimisation defect is corrected. On ranking quality that holds. On acc
 Conv module is genuinely and repeatably better by ~1.9 points, and no amount of framing makes that
 a tie.
 
-### Context from Phase 1
+### Two findings that reframe the comparison
 
-The incumbent's own advantage is already within noise. The paper claims the Conv module adds
-+4.66 accuracy / +6.37 F1 over flat summation; measured pairwise over 3 seeds it is **+0.98 /
-+0.40 with the sign flipping across seeds** (Devign won F1 on 1 of 3). So "MIL beats Eq. 9" is a
-weaker claim than it sounds, and "MIL ties Eq. 9" is the outcome the thesis predicts.
+**The `logit_affine` fix moves the operating point, not the model.** TRUE − FALSE: accuracy +1.23
+(5/5 seeds), but ROC-AUC +0.42 (3/5), PR-AUC +0.47 (3/5), F1 −0.20 (2/5). The Eq. 9 initialisation
+defect is real and measured, but by early-stopping convergence the model escapes it unaided. So
+"the fixed Conv module" and "Eq. 9 as written" are nearly the same model by the end — which makes
+MIL's accuracy deficit a deficit against the paper's readout too, not just against a repaired one.
+
+**Conv does beat flat summation, at a third the claimed size.** Over 5 seeds: accuracy +1.61 (5/5),
+ROC-AUC +1.55 (5/5), PR-AUC +2.34 (5/5), but F1 −1.47 (2/5). An earlier 3-seed reading in this
+repository reported the sign as flipping; at 5 seeds it does not. That earlier reading was a
+small-sample artifact and is superseded.
 
 ## 3.2 Localisation — *not measured*
 
